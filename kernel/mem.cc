@@ -1633,7 +1633,10 @@ void Mem::emulate_read_first(FfInitVals *initvals) {
 		ff_en.pol_clk = port.clk_polarity;
 		ff_en.sig_d = compressed.first;
 		ff_en.sig_q = new_en;;
-		ff_en.val_init = Const(State::S0, ff_en.width);
+		if (inits.empty())
+			ff_en.val_init = Const(State::Sx, ff_en.width);
+		else
+			ff_en.val_init = Const(State::S0, ff_en.width);
 		ff_en.emit();
 		port.data = new_data;
 		port.addr = new_addr;
@@ -1662,5 +1665,97 @@ SigSpec MemWr::decompress_en(const std::vector<int> &swizzle, SigSpec sig) {
 	SigSpec res;
 	for (int i: swizzle)
 		res.append(sig[i]);
+	return res;
+}
+
+bool MemWr::uniform_en() {
+	for (auto bit: en)
+		if (bit != en[0])
+			return false;
+	return true;
+}
+
+std::vector<SigSpec> Mem::generate_demux(int wpidx, int addr_shift, std::vector<int> addr_mux_bits) {
+	auto &port = wr_ports[wpidx];
+	std::vector<SigSpec> res;
+	int addr_start = start_offset & ~((1 << addr_shift) - 1);
+	int addr_end = ((start_offset + size - 1) | ((1 << addr_shift) - 1)) + 1;
+	int hi_bits = ceil_log2(addr_end - addr_start) - addr_shift;
+	auto compressed = port.compress_en();
+	SigSpec sig_a = compressed.first;
+	SigSpec addr = port.addr;
+	addr.extend_u0(addr_shift + hi_bits, false);
+	if (GetSize(addr) > hi_bits + addr_shift) {
+		int lo = start_offset;
+		int hi = start_offset + size;
+		int bits = ceil_log2(hi);
+		for (int i = 0; i < bits; i++) {
+			int new_lo = lo;
+			if (lo & 1 << i)
+				new_lo -= 1 << i;
+			int new_hi = hi;
+			if (hi & 1 << i)
+				new_hi += 1 << i;
+			if (new_hi - new_lo > (1 << (hi_bits + addr_shift)))
+				break;
+			lo = new_lo;
+			hi = new_hi;
+		}
+		SigSpec in_range = module->And(NEW_ID, module->Ge(NEW_ID, addr, lo), module->Lt(NEW_ID, addr, hi));
+		sig_a = module->Mux(NEW_ID, Const(State::S0, GetSize(sig_a)), sig_a, in_range);
+	}
+	SigSpec sig_s;
+	for (int x : addr_mux_bits)
+		sig_s.append(addr[x]);
+	for (int i = 0; i < hi_bits; i++)
+		sig_s.append(addr[addr_shift + i]);
+	SigSpec sig_y;
+	if (GetSize(sig_s) == 0)
+		sig_y = sig_a;
+	else
+		sig_y = module->Demux(NEW_ID, sig_a, sig_s);
+	for (int i = 0; i < ((addr_end - addr_start) >> addr_shift); i++) {
+		for (int j = 0; j < (1 << GetSize(addr_mux_bits)); j++) {
+			int hi = ((addr_start >> addr_shift) + i) & ((1 << hi_bits) - 1);
+			int pos = (hi << GetSize(addr_mux_bits) | j) * GetSize(sig_a);
+			res.push_back(port.decompress_en(compressed.second, sig_y.extract(pos, GetSize(sig_a))));
+		}
+	}
+	return res;
+}
+
+std::vector<SigSpec> Mem::generate_mux(int rpidx, int addr_shift, std::vector<int> addr_mux_bits) {
+	auto &port = rd_ports[rpidx];
+	std::vector<SigSpec> res;
+	int addr_start = start_offset & ~((1 << addr_shift) - 1);
+	int addr_end = ((start_offset + size - 1) | ((1 << addr_shift) - 1)) + 1;
+	int hi_bits = ceil_log2(addr_end - addr_start) - addr_shift;
+	SigSpec sig_s;
+	SigSpec addr = port.addr;
+	addr.extend_u0(addr_shift + hi_bits, false);
+	for (int x : addr_mux_bits)
+		sig_s.append(addr[x]);
+	for (int i = 0; i < hi_bits; i++)
+		sig_s.append(addr[addr_shift + i]);
+	if (GetSize(sig_s) == 0) {
+		return {port.data};
+	}
+	if (port.clk_enable) {
+		SigSpec new_sig_s = module->addWire(NEW_ID, GetSize(sig_s));
+		module->addDffe(NEW_ID, port.clk, port.en, sig_s, new_sig_s, port.clk_polarity);
+		sig_s = new_sig_s;
+	}
+	SigSpec sig_a = Const(State::Sx, GetSize(port.data) << hi_bits << GetSize(addr_mux_bits));
+	for (int i = 0; i < ((addr_end - addr_start) >> addr_shift); i++) {
+		for (int j = 0; j < (1 << GetSize(addr_mux_bits)); j++) {
+			SigSpec sig = module->addWire(NEW_ID, GetSize(port.data));
+			int hi = ((addr_start >> addr_shift) + i) & ((1 << hi_bits) - 1);
+			int pos = (hi << GetSize(addr_mux_bits) | j) * GetSize(port.data);
+			for (int k = 0; k < GetSize(port.data); k++)
+				sig_a[pos + k] = sig[k];
+			res.push_back(sig);
+		}
+	}
+	module->addBmux(NEW_ID, sig_a, sig_s, port.data);
 	return res;
 }

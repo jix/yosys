@@ -77,6 +77,7 @@ struct MemWr : RTLIL::AttrObject {
 
 	std::pair<SigSpec, std::vector<int>> compress_en();
 	SigSpec decompress_en(const std::vector<int> &swizzle, SigSpec sig);
+	bool uniform_en();
 };
 
 struct MemInit : RTLIL::AttrObject {
@@ -220,6 +221,9 @@ struct Mem : RTLIL::AttrObject {
 	// This can only be used when all read ports and all write ports are
 	// in the same clock domain.
 	void emulate_read_first(FfInitVals *initvals);
+
+	std::vector<SigSpec> generate_demux(int wpidx, int addr_shift, std::vector<int> addr_mux_bits);
+	std::vector<SigSpec> generate_mux(int rpidx, int addr_shift, std::vector<int> addr_mux_bits);
 
 	Mem(Module *module, IdString memid, int width, int start_offset, int size) : module(module), memid(memid), packed(false), mem(nullptr), cell(nullptr), width(width), start_offset(start_offset), size(size) {}
 };
