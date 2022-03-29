@@ -1316,7 +1316,8 @@ if tempind:
         smt_assert_consequent(get_constr_expr(constr_assumes, step))
 
         if step == num_steps:
-            smt_assert("(not (and (|%s_a| s%d) %s))" % (topmod, step, get_constr_expr(constr_asserts, step)))
+            if not presat:
+                smt_assert("(not (and (|%s_a| s%d) %s))" % (topmod, step, get_constr_expr(constr_asserts, step)))
 
         else:
             smt_assert_antecedent("(|%s_t| s%d s%d)" % (topmod, step, step+1))
@@ -1333,6 +1334,17 @@ if tempind:
             continue
 
         skip_counter = 0
+
+        if presat:
+            if step != num_steps:
+                print_msg("Checking induction assumptions in step %d.." % (step))
+                if smt_check_sat() == "unsat":
+                    print_msg("Induction assumptions are unsatisfiable!")
+                    retstatus = "PREUNSAT"
+                    break
+            smt_push()
+            smt_assert("(not (and (|%s_a| s%d) %s))" % (topmod, num_steps, get_constr_expr(constr_asserts, num_steps)))
+
         print_msg("Trying induction in step %d.." % (step))
 
         if smt_check_sat() == "sat":
@@ -1347,6 +1359,8 @@ if tempind:
                 print_failed_asserts(num_steps)
                 write_trace(step, num_steps+1, "%d" % step)
 
+            if presat:
+                smt_pop()
         else:
             print_msg("Temporal induction successful.")
             retstatus = "PASSED"
