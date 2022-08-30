@@ -378,7 +378,7 @@ static void dfflibmap(RTLIL::Design *design, RTLIL::Module *module)
 			} else
 			if (port.second == 'q') {
 				RTLIL::SigSpec old_sig = cell_connections[std::string("\\") + char(port.second - ('a' - 'A'))];
-				sig = module->addWire(NEW_ID, GetSize(old_sig));
+				sig = module->addWire(NEW_ID_SUFFIX("XXX(jix)"), GetSize(old_sig));
 				if (has_q && has_qn) {
 					for (auto &it : notmap[sigmap(old_sig)]) {
 						module->connect(it->getPort(ID::Y), sig);

@@ -12,7 +12,7 @@ select -assert-none t:SB_MAC16 %% t:* %D
 design -load read
 hierarchy -top top2
 
-#equiv_opt -multiclock -assert -map +/ice40/cells_sim.v synth_ice40 -dsp # equivalency check
+#XXX equiv_opt -multiclock -assert -map +/ice40/cells_sim.v synth_ice40 -dsp # equivalency check
 
 equiv_opt -run :prove -multiclock -assert -map +/ice40/cells_sim.v synth_ice40 -dsp # equivalency check
 clk2fflogic

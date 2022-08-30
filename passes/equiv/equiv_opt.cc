@@ -162,6 +162,9 @@ struct EquivOptPass:public ScriptPass
 			command += args[argidx];
 		}
 
+		if (multiclock)
+			negsetuphold = "-negsetup"; // XXX(jix) handling
+
 		if (command.empty())
 			log_cmd_error("No optimization pass specified!\n");
 

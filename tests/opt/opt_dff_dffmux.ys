@@ -113,7 +113,7 @@ proc
 #     instead of `sat -tempinduct-baseonly` or
 #     `sat -tempinduct` which is necessary for this
 #     testcase
-#equiv_opt -assert opt
+#XXX equiv_opt -assert opt
 
 design -save gold
 opt
