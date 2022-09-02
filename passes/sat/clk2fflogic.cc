@@ -38,18 +38,18 @@ struct Clk2fflogicPass : public Pass {
 		log("implicit global clock. This is useful for formal verification of designs with\n");
 		log("multiple clocks.\n");
 		log("\n");
-		log("  -negsetup\n");
+		log("  -!neghold\n");
 		log("    By default this pass assumes negative hold time on async FF inputs. With\n");
 		log("    this option negative setup time is assumed instead.\n");
 		log("\n");
 	}
-	SigSpec wrap_async_control(Module *module, SigSpec sig, bool polarity, bool is_fine, bool negsetup, IdString past_sig_id) {
+	SigSpec wrap_async_control(Module *module, SigSpec sig, bool polarity, bool is_fine, bool neghold, IdString past_sig_id) {
 		if (!is_fine)
-			return wrap_async_control(module, sig, polarity, negsetup, past_sig_id);
-		return wrap_async_control_gate(module, sig, polarity, negsetup, past_sig_id);
+			return wrap_async_control(module, sig, polarity, neghold, past_sig_id);
+		return wrap_async_control_gate(module, sig, polarity, neghold, past_sig_id);
 	}
-	SigSpec wrap_async_control(Module *module, SigSpec sig, bool polarity, bool negsetup, IdString past_sig_id) {
-		if (!negsetup) {
+	SigSpec wrap_async_control(Module *module, SigSpec sig, bool polarity, bool neghold, IdString past_sig_id) {
+		if (neghold) {
 			Wire *past_sig = module->addWire(past_sig_id, GetSize(sig));
 			past_sig->attributes[ID::init] = RTLIL::Const(polarity ? State::S0 : State::S1, GetSize(sig));
 			module->addFf(NEW_ID, sig, past_sig);
@@ -63,8 +63,8 @@ struct Clk2fflogicPass : public Pass {
 		else
 			return module->Not(NEW_ID, sig);
 	}
-	SigSpec wrap_async_control_gate(Module *module, SigSpec sig, bool polarity, bool negsetup, IdString past_sig_id) {
-		if (!negsetup) {
+	SigSpec wrap_async_control_gate(Module *module, SigSpec sig, bool polarity, bool neghold, IdString past_sig_id) {
+		if (neghold) {
 			Wire *past_sig = module->addWire(past_sig_id);
 			past_sig->attributes[ID::init] = polarity ? State::S0 : State::S1;
 			module->addFfGate(NEW_ID, sig, past_sig);
@@ -80,15 +80,15 @@ struct Clk2fflogicPass : public Pass {
 	}
 	void execute(std::vector<std::string> args, RTLIL::Design *design) override
 	{
-		bool negsetup = false;
+		bool neghold = false;
 
 		log_header(design, "Executing CLK2FFLOGIC pass (convert clocked FFs to generic $ff cells).\n");
 
 		size_t argidx;
 		for (argidx = 1; argidx < args.size(); argidx++)
 		{
-			if (args[argidx] == "-negsetup") {
-				negsetup = true;
+			if (args[argidx] == "-neghold") {
+				neghold = true;
 				continue;
 			}
 			break;
@@ -245,7 +245,7 @@ struct Clk2fflogicPass : public Pass {
 					// clk2fflogic before opt_dff (which does more and possibly unwanted optimizations) this check avoids
 					// generating a lot of extra logic.
 					if (ff.has_aload && ff.sig_aload != (ff.pol_aload ? State::S0 : State::S1)) {
-						SigSpec sig_aload = wrap_async_control(module, ff.sig_aload, ff.pol_aload, ff.is_fine, NEW_ID);
+						SigSpec sig_aload = wrap_async_control(module, ff.sig_aload, ff.pol_aload, ff.is_fine, neghold, NEW_ID);
 
 						if (!ff.is_fine)
 							qval = module->Mux(NEW_ID, qval, ff.sig_ad, sig_aload);
@@ -254,8 +254,8 @@ struct Clk2fflogicPass : public Pass {
 					}
 
 					if (ff.has_sr) {
-						SigSpec setval = wrap_async_control(module, ff.sig_set, ff.pol_set, ff.is_fine, negsetup, NEW_ID);
-						SigSpec clrval = wrap_async_control(module, ff.sig_clr, ff.pol_clr, ff.is_fine, negsetup, NEW_ID);
+						SigSpec setval = wrap_async_control(module, ff.sig_set, ff.pol_set, ff.is_fine, neghold, NEW_ID);
+						SigSpec clrval = wrap_async_control(module, ff.sig_clr, ff.pol_clr, ff.is_fine, neghold, NEW_ID);
 						if (!ff.is_fine) {
 							clrval = module->Not(NEW_ID, clrval);
 							qval = module->Or(NEW_ID, qval, setval);
@@ -267,7 +267,7 @@ struct Clk2fflogicPass : public Pass {
 						}
 					} else if (ff.has_arst) {
 						IdString id = NEW_ID_SUFFIX(stringf("%s#past_arst#%s", sig_q_str.c_str(), log_signal(ff.sig_arst)));
-						SigSpec arst = wrap_async_control(module, ff.sig_arst, ff.pol_arst, ff.is_fine, negsetup, id);
+						SigSpec arst = wrap_async_control(module, ff.sig_arst, ff.pol_arst, ff.is_fine, neghold, id);
 						if (!ff.is_fine)
 							module->addMux(NEW_ID, qval, ff.val_arst, arst, ff.sig_q);
 						else

@@ -41,20 +41,26 @@ struct Async2syncPass : public Pass {
 		log("reset value in the next cycle regardless of the data-in value at the time of\n");
 		log("the clock edge.\n");
 		log("\n");
+		log("  -negsetup\n");
+		log("    By default this pass assumes negative hold time on async FF inputs. With\n");
+		log("    this option negative setup time is assumed instead.\n");
+		log("  -neghold\n");
+		log("    XXX(jix)\n");
+		log("\n");
 	}
 	void execute(std::vector<std::string> args, RTLIL::Design *design) override
 	{
-		// bool flag_noinit = false;
+		bool neghold = false;
 
 		log_header(design, "Executing ASYNC2SYNC pass.\n");
 
 		size_t argidx;
 		for (argidx = 1; argidx < args.size(); argidx++)
 		{
-			// if (args[argidx] == "-noinit") {
-			// 	flag_noinit = true;
-			// 	continue;
-			// }
+			if (args[argidx] == "-neghold") {
+				neghold = true;
+				continue;
+			}
 			break;
 		}
 		extra_args(args, argidx, design);
@@ -89,7 +95,7 @@ struct Async2syncPass : public Pass {
 
 						initvals.remove_init(ff.sig_q);
 
-						Wire *new_d = module->addWire(NEW_ID, ff.width);
+						Wire *new_d = !neghold ? nullptr : module->addWire(NEW_ID, ff.width);
 						Wire *new_q = module->addWire(NEW_ID, ff.width);
 
 						SigSpec sig_set = ff.sig_set;
@@ -110,20 +116,25 @@ struct Async2syncPass : public Pass {
 						}
 
 						if (!ff.is_fine) {
-							SigSpec tmp = module->Or(NEW_ID, ff.sig_d, sig_set);
-							module->addAnd(NEW_ID, tmp, sig_clr, new_d);
+							if (neghold) {
+								SigSpec tmp = module->Or(NEW_ID, ff.sig_d, sig_set);
+								module->addAnd(NEW_ID, tmp, sig_clr, new_d);
+							}
 
-							tmp = module->Or(NEW_ID, new_q, sig_set);
+							SigSpec tmp = module->Or(NEW_ID, new_q, sig_set);
 							module->addAnd(NEW_ID, tmp, sig_clr, ff.sig_q);
 						} else {
-							SigSpec tmp = module->OrGate(NEW_ID, ff.sig_d, sig_set);
-							module->addAndGate(NEW_ID, tmp, sig_clr, new_d);
+							if (neghold) {
+								SigSpec tmp = module->OrGate(NEW_ID, ff.sig_d, sig_set);
+								module->addAndGate(NEW_ID, tmp, sig_clr, new_d);
+							}
 
-							tmp = module->OrGate(NEW_ID, new_q, sig_set);
+							SigSpec tmp = module->OrGate(NEW_ID, new_q, sig_set);
 							module->addAndGate(NEW_ID, tmp, sig_clr, ff.sig_q);
 						}
 
-						ff.sig_d = new_d;
+						if (neghold)
+							ff.sig_d = new_d;
 						ff.sig_q = new_q;
 						ff.has_sr = false;
 					} else if (ff.has_aload) {
@@ -135,32 +146,40 @@ struct Async2syncPass : public Pass {
 
 						initvals.remove_init(ff.sig_q);
 
-						Wire *new_d = module->addWire(NEW_ID, ff.width);
+						Wire *new_d = !neghold ? nullptr : module->addWire(NEW_ID, ff.width);
 						Wire *new_q = module->addWire(NEW_ID, ff.width);
 
 						if (ff.pol_aload) {
 							if (!ff.is_fine) {
 								module->addMux(NEW_ID, new_q, ff.sig_ad, ff.sig_aload, ff.sig_q);
-								module->addMux(NEW_ID, ff.sig_d, ff.sig_ad, ff.sig_aload, new_d);
+								if (neghold)
+									module->addMux(NEW_ID, ff.sig_d, ff.sig_ad, ff.sig_aload, new_d);
 							} else {
 								module->addMuxGate(NEW_ID, new_q, ff.sig_ad, ff.sig_aload, ff.sig_q);
-								module->addMuxGate(NEW_ID, ff.sig_d, ff.sig_ad, ff.sig_aload, new_d);
+								if (neghold)
+									module->addMuxGate(NEW_ID, ff.sig_d, ff.sig_ad, ff.sig_aload, new_d);
 							}
 						} else {
 							if (!ff.is_fine) {
 								module->addMux(NEW_ID, ff.sig_ad, new_q, ff.sig_aload, ff.sig_q);
-								module->addMux(NEW_ID, ff.sig_ad, ff.sig_d, ff.sig_aload, new_d);
+								if (neghold)
+									module->addMux(NEW_ID, ff.sig_ad, ff.sig_d, ff.sig_aload, new_d);
 							} else {
 								module->addMuxGate(NEW_ID, ff.sig_ad, new_q, ff.sig_aload, ff.sig_q);
-								module->addMuxGate(NEW_ID, ff.sig_ad, ff.sig_d, ff.sig_aload, new_d);
+								if (neghold)
+									module->addMuxGate(NEW_ID, ff.sig_ad, ff.sig_d, ff.sig_aload, new_d);
 							}
 						}
 
-						ff.sig_d = new_d;
+						if (neghold)
+							ff.sig_d = new_d;
 						ff.sig_q = new_q;
 						ff.has_aload = false;
 					} else if (ff.has_arst) {
-						ff.unmap_srst();
+						if (!neghold)
+							ff.unmap_ce_srst();
+						else
+							ff.unmap_srst();
 
 						log("Replacing %s.%s (%s): ARST=%s, D=%s, Q=%s\n",
 								log_id(module), log_id(cell), log_id(cell->type),
@@ -184,7 +203,7 @@ struct Async2syncPass : public Pass {
 
 						ff.sig_q = new_q;
 						ff.has_arst = false;
-						ff.has_srst = true;
+						ff.has_srst = neghold;
 						ff.ce_over_srst = false;
 						ff.val_srst = ff.val_arst;
 						ff.sig_srst = ff.sig_arst;

@@ -373,6 +373,10 @@ RTLIL::Module *get_module(RTLIL::Design                  &design,
 		log_error("Module `%s' referenced in module `%s' in cell `%s' is not part of the design.\n",
 		          cell_type.c_str(), parent.name.c_str(), cell.name.c_str());
 
+
+	log("MISSING: %s %s %s\n",
+		          cell_type.c_str(), parent.name.c_str(), cell.name.c_str());
+
 	return nullptr;
 }
 
