@@ -47,9 +47,9 @@ IdString map_name(RTLIL::Cell *cell, T *object)
 }
 
 template<class T>
-void map_attributes(RTLIL::Cell *cell, T *object, IdString orig_object_name)
+void map_attributes(RTLIL::Cell *cell, T *object, IdString orig_object_name, bool using_scopeinfo)
 {
-	if (object->has_attribute(ID::src))
+	if (!using_scopeinfo && object->has_attribute(ID::src))
 		object->add_strpool_attribute(ID::src, cell->get_strpool_attribute(ID::src));
 
 	// Preserve original names via the hdlname attribute, but only for objects with a fully public name.
@@ -76,6 +76,7 @@ void map_sigspec(const dict<RTLIL::Wire*, RTLIL::Wire*> &map, RTLIL::SigSpec &si
 struct FlattenWorker
 {
 	bool ignore_wb = false;
+	bool create_scopeinfo = true;
 
 	void flatten_cell(RTLIL::Design *design, RTLIL::Module *module, RTLIL::Cell *cell, RTLIL::Module *tpl, SigMap &sigmap, std::vector<RTLIL::Cell*> &new_cells)
 	{
@@ -84,7 +85,7 @@ struct FlattenWorker
 		dict<IdString, IdString> memory_map;
 		for (auto &tpl_memory_it : tpl->memories) {
 			RTLIL::Memory *new_memory = module->addMemory(map_name(cell, tpl_memory_it.second), tpl_memory_it.second);
-			map_attributes(cell, new_memory, tpl_memory_it.second->name);
+			map_attributes(cell, new_memory, tpl_memory_it.second->name, create_scopeinfo);
 			memory_map[tpl_memory_it.first] = new_memory->name;
 			design->select(module, new_memory);
 		}
@@ -114,14 +115,14 @@ struct FlattenWorker
 				new_wire->port_id = false;
 			}
 
-			map_attributes(cell, new_wire, tpl_wire->name);
+			map_attributes(cell, new_wire, tpl_wire->name, create_scopeinfo);
 			wire_map[tpl_wire] = new_wire;
 			design->select(module, new_wire);
 		}
 
 		for (auto &tpl_proc_it : tpl->processes) {
 			RTLIL::Process *new_proc = module->addProcess(map_name(cell, tpl_proc_it.second), tpl_proc_it.second);
-			map_attributes(cell, new_proc, tpl_proc_it.second->name);
+			map_attributes(cell, new_proc, tpl_proc_it.second->name, create_scopeinfo);
 			for (auto new_proc_sync : new_proc->syncs)
 				for (auto &memwr_action : new_proc_sync->mem_write_actions)
 					memwr_action.memid = memory_map.at(memwr_action.memid).str();
@@ -132,7 +133,7 @@ struct FlattenWorker
 
 		for (auto tpl_cell : tpl->cells()) {
 			RTLIL::Cell *new_cell = module->addCell(map_name(cell, tpl_cell), tpl_cell);
-			map_attributes(cell, new_cell, tpl_cell->name);
+			map_attributes(cell, new_cell, tpl_cell->name, create_scopeinfo);
 			if (new_cell->has_memid()) {
 				IdString memid = new_cell->getParam(ID::MEMID).decode_string();
 				new_cell->setParam(ID::MEMID, Const(memory_map.at(memid).str()));
@@ -220,7 +221,31 @@ struct FlattenWorker
 			sigmap.add(new_conn.first, new_conn.second);
 		}
 
+		RTLIL::Cell *scopeinfo = nullptr;
+		RTLIL::IdString cell_name = cell->name;
+
+		if (create_scopeinfo)
+		{
+			// The $scopeinfo's name will be changed below after removing the flattened cell
+			scopeinfo = module->addCell(NEW_ID, ID($scopeinfo));
+			scopeinfo->setParam(ID::TYPE, RTLIL::Const("module"));
+
+			for (auto const &attr : cell->attributes)
+			{
+				if (attr.first == ID::hdlname)
+					scopeinfo->attributes.insert(attr);
+				else
+					scopeinfo->attributes.emplace(stringf("\\cell_%s", RTLIL::unescape_id(attr.first).c_str()), attr.second);
+			}
+
+			for (auto const &attr : tpl->attributes)
+				scopeinfo->attributes.emplace(stringf("\\module_%s", RTLIL::unescape_id(attr.first).c_str()), attr.second);
+		}
+
 		module->remove(cell);
+
+		if (create_scopeinfo)
+			module->rename(scopeinfo, cell_name);
 	}
 
 	void flatten_module(RTLIL::Design *design, RTLIL::Module *module, pool<RTLIL::Module*> &used_modules)
@@ -275,6 +300,14 @@ struct FlattenPass : public Pass {
 		log("    -wb\n");
 		log("        Ignore the 'whitebox' attribute on cell implementations.\n");
 		log("\n");
+		log("    -noscopeinfo\n");
+		log("        Do not create '$scopeinfo' cells that preserve attributes of cells and\n");
+		log("        modules that were removed during flattening. With this option, the\n");
+		log("        'src' attribute of a given cell is merged into all objects replacing\n");
+		log("        that cell, with multiple distinct 'src' locations separated by '|'.\n");
+		log("        Without this option these 'src' locations can be found via the\n");
+		log("        cell_src' and 'module_src' attribute of '$scopeinfo' cells.\n");
+		log("\n");
 	}
 	void execute(std::vector<std::string> args, RTLIL::Design *design) override
 	{
@@ -287,6 +320,10 @@ struct FlattenPass : public Pass {
 		for (argidx = 1; argidx < args.size(); argidx++) {
 			if (args[argidx] == "-wb") {
 				worker.ignore_wb = true;
+				continue;
+			}
+			if (args[argidx] == "-noscopeinfo") {
+				worker.create_scopeinfo = true;
 				continue;
 			}
 			break;

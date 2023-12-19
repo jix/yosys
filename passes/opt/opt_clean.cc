@@ -35,10 +35,12 @@ struct keep_cache_t
 {
 	Design *design;
 	dict<Module*, bool> cache;
+	bool purge_mode = false;
 
-	void reset(Design *design = nullptr)
+	void reset(Design *design = nullptr, bool purge_mode = false)
 	{
 		this->design = design;
+		this->purge_mode = purge_mode;
 		cache.clear();
 	}
 
@@ -86,6 +88,9 @@ struct keep_cache_t
 			return true;
 
 		if (cell->has_keep_attr())
+			return true;
+
+		if (!purge_mode && cell->type == ID($scopeinfo))
 			return true;
 
 		if (cell->module && cell->module->design)
@@ -638,7 +643,7 @@ struct OptCleanPass : public Pass {
 		}
 		extra_args(args, argidx, design);
 
-		keep_cache.reset(design);
+		keep_cache.reset(design, purge_mode);
 
 		ct_reg.setup_internals_mem();
 		ct_reg.setup_internals_anyinit();
