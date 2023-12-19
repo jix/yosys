@@ -2741,3 +2741,10 @@ assign Y = A;
 endmodule
 
 // --------------------------------------------------------
+
+(* noblackbox *)
+module \$scopeinfo ();
+
+parameter TYPE = "";
+
+endmodule
