@@ -240,6 +240,8 @@ struct FlattenWorker
 
 			for (auto const &attr : tpl->attributes)
 				scopeinfo->attributes.emplace(stringf("\\module_%s", RTLIL::unescape_id(attr.first).c_str()), attr.second);
+
+			scopeinfo->attributes.emplace(ID(module), RTLIL::unescape_id(module->name));
 		}
 
 		module->remove(cell);
