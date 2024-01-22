@@ -23,6 +23,52 @@
 USING_YOSYS_NAMESPACE
 PRIVATE_NAMESPACE_BEGIN
 
+static RTLIL::IdString formal_flavor(RTLIL::Cell *cell)
+{
+	if (cell->type != ID($check))
+		return cell->type;
+
+	std::string flavor_param = cell->getParam(ID(FLAVOR)).decode_string();
+	if (flavor_param == "assert")
+		return ID($assert);
+	else if (flavor_param == "assume")
+		return ID($assume);
+	else if (flavor_param == "cover")
+		return ID($cover);
+	else if (flavor_param == "live")
+		return ID($live);
+	else if (flavor_param == "fair")
+		return ID($fair);
+	else
+		log_abort();
+}
+
+static void set_formal_flavor(RTLIL::Cell *cell, RTLIL::IdString flavor)
+{
+	if (cell->type != ID($check)) {
+		cell->type = flavor;
+		return;
+	}
+
+	if (cell->type == ID($assert))
+		cell->setParam(ID(FLAVOR), std::string("assert"));
+	else if (cell->type == ID($assume))
+		cell->setParam(ID(FLAVOR), std::string("assume"));
+	else if (cell->type == ID($cover))
+		cell->setParam(ID(FLAVOR), std::string("cover"));
+	else if (cell->type == ID($live))
+		cell->setParam(ID(FLAVOR), std::string("live"));
+	else if (cell->type == ID($fair))
+		cell->setParam(ID(FLAVOR), std::string("fair"));
+	else
+		log_abort();
+}
+
+static bool is_triggered_check_cell(RTLIL::Cell * cell)
+{
+	return cell->type == ID($check) && cell->getParam(ID(TRG_ENABLE)).as_bool();
+}
+
 struct ChformalPass : public Pass {
 	ChformalPass() : Pass("chformal", "change formal constraints of the design") { }
 	void help() override
@@ -40,6 +86,9 @@ struct ChformalPass : public Pass {
 		log("    -live         $live cells, representing assert(s_eventually ...)\n");
 		log("    -fair         $fair cells, representing assume(s_eventually ...)\n");
 		log("    -cover        $cover cells, representing cover() statements\n");
+		log("\n");
+		log("    Additionally chformal will operator on $check cells corresponding to the\n");
+		log("    selected constraint types.\n");
 		log("\n");
 		log("Exactly one of the following modes must be specified:\n");
 		log("\n");
@@ -68,6 +117,11 @@ struct ChformalPass : public Pass {
 		log("    -live2fair\n");
 		log("    -fair2live\n");
 		log("        change the roles of cells as indicated. these options can be combined\n");
+		log("\n");
+		log("    -lower\n");
+		log("        convert each $check cell into an $assert, $assume, $live, $fair or\n");
+		log("        $cover cell. If the $check cell contains a message, also produce a\n");
+		log("        $print cell.\n");
 		log("\n");
 	}
 	void execute(std::vector<std::string> args, RTLIL::Design *design) override
@@ -146,6 +200,10 @@ struct ChformalPass : public Pass {
 				mode = 'c';
 				continue;
 			}
+			if (mode == 0 && args[argidx] == "-lower") {
+				mode = 'l';
+				continue;
+			}
 			break;
 		}
 		extra_args(args, argidx, design);
@@ -166,7 +224,7 @@ struct ChformalPass : public Pass {
 			vector<Cell*> constr_cells;
 
 			for (auto cell : module->selected_cells())
-				if (constr_types.count(cell->type))
+				if (constr_types.count(formal_flavor(cell)))
 					constr_cells.push_back(cell);
 
 			if (mode == 'r')
@@ -216,6 +274,16 @@ struct ChformalPass : public Pass {
 				}
 
 				for (auto cell : constr_cells)
+				{
+					if (is_triggered_check_cell(cell)) {
+						cell->setPort(ID::TRG, SigSpec());
+						cell->setParam(ID::TRG_ENABLE, false);
+						cell->setParam(ID::TRG_WIDTH, 0);
+						cell->setParam(ID::TRG_POLARITY, false);
+					}
+
+					IdString flavor = formal_flavor(cell);
+
 					while (true)
 					{
 						SigSpec A = sigmap(cell->getPort(ID::A));
@@ -225,8 +293,8 @@ struct ChformalPass : public Pass {
 							break;
 
 						if (!init_zero.count(EN)) {
-							if (cell->type == ID($cover)) break;
-							if (cell->type.in(ID($assert), ID($assume)) && !init_one.count(A)) break;
+							if (flavor == ID($cover)) break;
+							if (flavor.in(ID($assert), ID($assume)) && !init_one.count(A)) break;
 						}
 
 						const auto &A_map = ffmap.at(A);
@@ -238,25 +306,31 @@ struct ChformalPass : public Pass {
 						cell->setPort(ID::A, A_map.first);
 						cell->setPort(ID::EN, EN_map.first);
 					}
+				}
 			}
 			else
 			if (mode == 'd')
 			{
 				for (auto cell : constr_cells)
-				for (int i = 0; i < mode_arg; i++)
 				{
-					SigSpec orig_a = cell->getPort(ID::A);
-					SigSpec orig_en = cell->getPort(ID::EN);
+					if (is_triggered_check_cell(cell))
+						log_error("Cannot delay edge triggered $check cell %s, run async2sync or clk2fflogic first.\n", log_id(cell));
 
-					Wire *new_a = module->addWire(NEW_ID);
-					Wire *new_en = module->addWire(NEW_ID);
-					new_en->attributes[ID::init] = State::S0;
+					for (int i = 0; i < mode_arg; i++)
+					{
+						SigSpec orig_a = cell->getPort(ID::A);
+						SigSpec orig_en = cell->getPort(ID::EN);
 
-					module->addFf(NEW_ID, orig_a, new_a);
-					module->addFf(NEW_ID, orig_en, new_en);
+						Wire *new_a = module->addWire(NEW_ID);
+						Wire *new_en = module->addWire(NEW_ID);
+						new_en->attributes[ID::init] = State::S0;
 
-					cell->setPort(ID::A, new_a);
-					cell->setPort(ID::EN, new_en);
+						module->addFf(NEW_ID, orig_a, new_a);
+						module->addFf(NEW_ID, orig_en, new_en);
+
+						cell->setPort(ID::A, new_a);
+						cell->setPort(ID::EN, new_en);
+					}
 				}
 			}
 			else
@@ -278,21 +352,68 @@ struct ChformalPass : public Pass {
 			if (mode =='p')
 			{
 				for (auto cell : constr_cells)
-					module->addCover(NEW_ID_SUFFIX("coverenable"),
-						cell->getPort(ID::EN), State::S1, cell->get_src_attribute());
+				{
+					if (cell->type == ID($check)) {
+						Cell *cover = module->addCell(NEW_ID_SUFFIX("coverenable"), ID($check));
+						cover->attributes = cell->attributes;
+						cover->parameters = cell->parameters;
+						for (auto conn : cell->connections())
+							cover->setPort(conn.first, conn.first == ID::A ? State::S1 : conn.second);
+					} else {
+						module->addCover(NEW_ID_SUFFIX("coverenable"),
+							cell->getPort(ID::EN), State::S1, cell->get_src_attribute());
+					}
+				}
 			}
 			else
 			if (mode == 'c')
 			{
-				for (auto cell : constr_cells)
-					if (assert2assume && cell->type == ID($assert))
-						cell->type = ID($assume);
-					else if (assume2assert && cell->type == ID($assume))
-						cell->type = ID($assert);
-					else if (live2fair && cell->type == ID($live))
-						cell->type = ID($fair);
-					else if (fair2live && cell->type == ID($fair))
-						cell->type = ID($live);
+				for (auto cell : constr_cells) {
+					IdString flavor = formal_flavor(cell);
+					if (assert2assume && flavor == ID($assert))
+						set_formal_flavor(cell, ID($assume));
+					else if (assume2assert && flavor == ID($assume))
+						set_formal_flavor(cell, ID($assert));
+					else if (live2fair && flavor == ID($live))
+						set_formal_flavor(cell, ID($fair));
+					else if (fair2live && flavor == ID($fair))
+						set_formal_flavor(cell, ID($live));
+				}
+			}
+			else
+			if (mode == 'l')
+			{
+				for (auto cell : constr_cells) {
+					if (cell->type != ID($check))
+						continue;
+
+					if (is_triggered_check_cell(cell))
+						log_error("Cannot lower edge triggered $check cell %s, run async2sync or clk2fflogic first.\n", log_id(cell));
+
+
+					Cell *plain_cell = module->addCell(NEW_ID, formal_flavor(cell));
+
+					plain_cell->attributes = cell->attributes;
+
+					SigBit id_a = cell->getPort(ID::A);
+					SigBit id_en = cell->getPort(ID::EN);
+
+					plain_cell->setPort(ID::A, id_a);
+					plain_cell->setPort(ID::EN, id_en);
+
+					SigBit combined_en = module->And(NEW_ID, id_a, id_en);
+
+					module->swap_names(cell, plain_cell);
+
+					if (cell->getPort(ID::ARGS).empty()) {
+						module->remove(cell);
+					} else {
+						cell->type = ID($print);
+						cell->setPort(ID::EN, combined_en);
+						cell->unsetPort(ID::A);
+						cell->unsetParam(ID(FLAVOR));
+					}
+				}
 			}
 		}
 	}
