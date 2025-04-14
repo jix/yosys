@@ -22,6 +22,10 @@
 #include "kernel/json.h"
 #include "kernel/gzip.h"
 
+#include "libs/ezsat/ezcadical.h"
+#include "libs/ezsat/ezminisat.h"
+
+
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>

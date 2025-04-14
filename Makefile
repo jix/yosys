@@ -661,11 +661,24 @@ OBJS += libs/json11/json11.o
 
 OBJS += libs/ezsat/ezsat.o
 OBJS += libs/ezsat/ezminisat.o
+OBJS += libs/ezsat/ezcadical.o
+OBJS += libs/ezsat/cadical_log_message.o
 
 OBJS += libs/minisat/Options.o
 OBJS += libs/minisat/SimpSolver.o
 OBJS += libs/minisat/Solver.o
 OBJS += libs/minisat/System.o
+
+CADICAL_SRC := $(filter-out \
+	$(patsubst %,libs/cadical/src/%,cadical.cpp mobical.cpp message.cpp terminal.cpp),\
+	$(wildcard libs/cadical/src/*.cpp))
+
+CADICAL_OBJS := $(patsubst %.cpp,%.o,$(CADICAL_SRC)) libs/cadical/contrib/craigtracer.o
+
+OBJS += $(CADICAL_OBJS)
+
+CADICAL_CXXFLAGS ?= $(CXXFLAGS)
+CADICAL_CPPFLAGS ?= $(CPPFLAGS) -DNBUILD -DNDEBUG -I libs/cadical/src
 
 ifeq ($(ENABLE_ZLIB),1)
 OBJS += libs/fst/fstapi.o
@@ -766,6 +779,10 @@ endif
 %.o: %.cpp
 	$(Q) mkdir -p $(dir $@)
 	$(P) $(CXX) -o $@ -c $(CPPFLAGS) $(CXXFLAGS) $<
+
+$(CADICAL_OBJS): %.o: %.cpp
+	$(Q) mkdir -p $(dir $@)
+	$(P) $(CXX) -o $@ -c $(CADICAL_CPPFLAGS) $(CADICAL_CXXFLAGS) $<
 
 YOSYS_VER_STR := Yosys $(YOSYS_VER) (git sha1 $(GIT_REV), $(notdir $(CXX)) $(shell \
 		$(CXX) --version | tr ' ()' '\n' | grep '^[0-9]' | head -n1) $(filter -f% -m% -O% -DNDEBUG,$(CXXFLAGS)))

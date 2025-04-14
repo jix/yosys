@@ -132,8 +132,12 @@ int ezSAT::expression(OpId op, const std::vector<int> &args)
 			continue;
 		if (op == OpAnd && arg == CONST_TRUE)
 			continue;
+		if (op == OpAnd && arg == CONST_FALSE)
+			return CONST_FALSE;
 		if ((op == OpOr || op == OpXor) && arg == CONST_FALSE)
 			continue;
+		if (op == OpOr && arg == CONST_TRUE)
+			return CONST_TRUE;
 		if (op == OpXor && arg == CONST_TRUE) {
 			xorRemovedOddTrues = !xorRemovedOddTrues;
 			continue;
@@ -143,13 +147,7 @@ int ezSAT::expression(OpId op, const std::vector<int> &args)
 
 	if (myArgs.size() > 0 && (op == OpAnd || op == OpOr || op == OpXor || op == OpIFF)) {
 		std::sort(myArgs.begin(), myArgs.end());
-		int j = 0;
-		for (int i = 1; i < int(myArgs.size()); i++)
-			if (j < 0 || myArgs[j] != myArgs[i])
-				myArgs[++j] = myArgs[i];
-			else if (op == OpXor)
-				j--;
-		myArgs.resize(j+1);
+		myArgs.resize(std::unique(myArgs.begin(), myArgs.end()) - myArgs.begin());
 	}
 
 	switch (op)
@@ -160,6 +158,9 @@ int ezSAT::expression(OpId op, const std::vector<int> &args)
 			return CONST_FALSE;
 		if (myArgs[0] == CONST_FALSE)
 			return CONST_TRUE;
+		if (myArgs[0] < 0 && expressions[-myArgs[0] - 1].first == OpNot) {
+			return expressions[-myArgs[0] - 1].second[0];
+		}
 		break;
 
 	case OpAnd:
@@ -187,7 +188,10 @@ int ezSAT::expression(OpId op, const std::vector<int> &args)
 		assert(myArgs.size() >= 1);
 		if (myArgs.size() == 1)
 			return CONST_TRUE;
-		// FIXME: Add proper const folding
+		if (myArgs.size() == 2 && myArgs[0] == CONST_TRUE)
+			return myArgs[1];
+		if (myArgs.size() == 2 && myArgs[0] == CONST_FALSE)
+			return NOT(myArgs[1]);
 		break;
 
 	case OpITE:
@@ -673,7 +677,7 @@ void ezSAT::preSolverCallback()
 		non_incremental_solve_used_up = true;
 }
 
-bool ezSAT::solver(const std::vector<int>&, std::vector<bool>&, const std::vector<int>&)
+bool ezSAT::solver(const std::vector<int>&, std::vector<bool>&, const std::vector<int>&, std::vector<int>&)
 {
 	preSolverCallback();
 	fprintf(stderr, "*************************************************************************\n");

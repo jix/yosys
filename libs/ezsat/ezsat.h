@@ -80,6 +80,8 @@ public:
 	int solverTimeout;
 	bool solverTimoutStatus;
 
+	void clear_cache() { expressionsCache.clear(); }
+
 	ezSAT();
 	virtual ~ezSAT();
 
@@ -119,11 +121,19 @@ public:
 	// SAT solver interface
 	// If you are planning on using the solver API (and not simply create a CNF) you must use a child class
 	// of ezSAT that actually implements a solver backend, such as ezMiniSAT (see ezminisat.h).
+	bool solver(const std::vector<int> &modelExpressions, std::vector<bool> &modelValues, const std::vector<int> &assumptions) {
+		std::vector<int> failed;
+		return solver(modelExpressions, modelValues, assumptions, failed);
+	}
 
-	virtual bool solver(const std::vector<int> &modelExpressions, std::vector<bool> &modelValues, const std::vector<int> &assumptions);
+	virtual bool solver(const std::vector<int> &modelExpressions, std::vector<bool> &modelValues, const std::vector<int> &assumptions, std::vector<int> &failed);
 
 	bool solve(const std::vector<int> &modelExpressions, std::vector<bool> &modelValues, const std::vector<int> &assumptions) {
 		return solver(modelExpressions, modelValues, assumptions);
+	}
+
+	bool solve(const std::vector<int> &modelExpressions, std::vector<bool> &modelValues, const std::vector<int> &assumptions, std::vector<int> &failed) {
+		return solver(modelExpressions, modelValues, assumptions, failed);
 	}
 
 	bool solve(const std::vector<int> &modelExpressions, std::vector<bool> &modelValues, int a = 0, int b = 0, int c = 0, int d = 0, int e = 0, int f = 0) {

@@ -59,6 +59,7 @@ struct SatSolver
 
 struct ezSatPtr : public std::unique_ptr<ezSAT> {
 	ezSatPtr() : unique_ptr<ezSAT>(yosys_satsolver->create()) { }
+	ezSatPtr(ezSAT *ptr) : unique_ptr<ezSAT>(ptr) { }
 };
 
 struct SatGen
@@ -71,6 +72,7 @@ struct SatGen
 	std::map<std::string, RTLIL::SigSpec> assumes_a, assumes_en;
 	std::map<std::string, std::map<RTLIL::SigBit, int>> imported_signals;
 	std::map<std::pair<std::string, int>, bool> initstates;
+	std::map<int, dict<int, RTLIL::SigBit>> sigbits;
 	bool ignore_div_by_zero;
 	bool model_undef;
 	bool def_formal = false;
@@ -86,7 +88,7 @@ struct SatGen
 		this->prefix = prefix;
 	}
 
-	std::vector<int> importSigSpecWorker(RTLIL::SigSpec sig, std::string &pf, bool undef_mode, bool dup_undef)
+	std::vector<int> importSigSpecWorker(RTLIL::SigSpec sig, std::string &pf, bool undef_mode, bool dup_undef, int timestamp)
 	{
 		log_assert(!undef_mode || model_undef);
 		sigmap->apply(sig);
@@ -104,6 +106,8 @@ struct SatGen
 				std::string name = pf + (bit.wire->width == 1 ? stringf("%s", log_id(bit.wire)) : stringf("%s [%d]", log_id(bit.wire->name), bit.offset));
 				vec.push_back(ez->frozen_literal(name));
 				imported_signals[pf][bit] = vec.back();
+				if (!undef_mode)
+					sigbits[timestamp].emplace(ez->bind(vec.back()), bit);
 			}
 		return vec;
 	}
@@ -112,42 +116,42 @@ struct SatGen
 	{
 		log_assert(timestep != 0);
 		std::string pf = prefix + (timestep == -1 ? "" : stringf("@%d:", timestep));
-		return importSigSpecWorker(sig, pf, false, false);
+		return importSigSpecWorker(sig, pf, false, false, timestep);
 	}
 
 	std::vector<int> importDefSigSpec(RTLIL::SigSpec sig, int timestep = -1)
 	{
 		log_assert(timestep != 0);
 		std::string pf = prefix + (timestep == -1 ? "" : stringf("@%d:", timestep));
-		return importSigSpecWorker(sig, pf, false, true);
+		return importSigSpecWorker(sig, pf, false, true, timestep);
 	}
 
 	std::vector<int> importUndefSigSpec(RTLIL::SigSpec sig, int timestep = -1)
 	{
 		log_assert(timestep != 0);
 		std::string pf = "undef:" + prefix + (timestep == -1 ? "" : stringf("@%d:", timestep));
-		return importSigSpecWorker(sig, pf, true, false);
+		return importSigSpecWorker(sig, pf, true, false, timestep);
 	}
 
 	int importSigBit(RTLIL::SigBit bit, int timestep = -1)
 	{
 		log_assert(timestep != 0);
 		std::string pf = prefix + (timestep == -1 ? "" : stringf("@%d:", timestep));
-		return importSigSpecWorker(bit, pf, false, false).front();
+		return importSigSpecWorker(bit, pf, false, false, timestep).front();
 	}
 
 	int importDefSigBit(RTLIL::SigBit bit, int timestep = -1)
 	{
 		log_assert(timestep != 0);
 		std::string pf = prefix + (timestep == -1 ? "" : stringf("@%d:", timestep));
-		return importSigSpecWorker(bit, pf, false, true).front();
+		return importSigSpecWorker(bit, pf, false, true, timestep).front();
 	}
 
 	int importUndefSigBit(RTLIL::SigBit bit, int timestep = -1)
 	{
 		log_assert(timestep != 0);
 		std::string pf = "undef:" + prefix + (timestep == -1 ? "" : stringf("@%d:", timestep));
-		return importSigSpecWorker(bit, pf, true, false).front();
+		return importSigSpecWorker(bit, pf, true, false, timestep).front();
 	}
 
 	bool importedSigBit(RTLIL::SigBit bit, int timestep = -1)

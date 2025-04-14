@@ -47,6 +47,8 @@ void QuickConeSat::prepare()
 			if (bit.wire && bit.wire->get_bool_attribute(ID::onehot) && !imported_onehot.count(bit.wire))
 			{
 				std::vector<int> bits = satgen.importSigSpec(bit.wire);
+				for (int i = 0; i < GetSize(bits); i++)
+					node_bits.emplace(bits[i], (*satgen.sigmap)(SigBit(bit.wire, i)));
 				for (int i : bits)
 				for (int j : bits)
 					if (i != j)
@@ -68,6 +70,11 @@ void QuickConeSat::prepare()
 			bits_queue.insert(inputs.begin(), inputs.end());
 			satgen.importCell(pbit.cell);
 			imported_cells.insert(pbit.cell);
+
+			for (auto const &conn : pbit.cell->connections()) {
+				for (auto b : (*satgen.sigmap)(conn.second))
+					node_bits.emplace(satgen.importSigBit(b), b);
+			}
 		}
 
 		if (max_cell_count && GetSize(imported_cells) > max_cell_count)
@@ -84,7 +91,7 @@ int QuickConeSat::cell_complexity(RTLIL::Cell *cell)
 			ID($reduce_xnor), ID($reduce_bool),
 			ID($logic_not), ID($logic_and), ID($logic_or),
 			ID($eq), ID($ne), ID($eqx), ID($nex), ID($fa),
-			ID($mux), ID($pmux), ID($bmux), ID($demux), ID($lut), ID($sop),
+			ID($mux), ID($pmux), ID($bmux), ID($bwmux), ID($demux), ID($lut), ID($sop),
 			ID($_NOT_), ID($_AND_), ID($_NAND_), ID($_OR_), ID($_NOR_),
 			ID($_XOR_), ID($_XNOR_), ID($_ANDNOT_), ID($_ORNOT_),
 			ID($_MUX_), ID($_NMUX_), ID($_MUX4_), ID($_MUX8_), ID($_MUX16_),

@@ -56,7 +56,11 @@ struct QuickConeSat {
 	pool<RTLIL::Wire*> imported_onehot;
 	pool<RTLIL::SigBit> bits_queue;
 
+	dict<int, SigBit> node_bits;
+
 	QuickConeSat(ModWalker &modwalker) : modwalker(modwalker), ez(), satgen(ez.get(), &modwalker.sigmap) {}
+
+	QuickConeSat(ModWalker &modwalker, ezSatPtr sat) : modwalker(modwalker), ez(std::move(sat)), satgen(ez.get(), &modwalker.sigmap) {}
 
 	// Imports a signal into the SAT solver, queues its input cone to be
 	// imported in the next prepare() call.

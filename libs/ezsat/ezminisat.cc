@@ -30,6 +30,7 @@
 #include <limits.h>
 #include <stdint.h>
 #include <cinttypes>
+#include <algorithm>
 
 #if !defined(_WIN32) && !defined(__wasm)
 #  include <csignal>
@@ -99,11 +100,13 @@ void ezMiniSAT::alarmHandler(int)
 }
 #endif
 
-bool ezMiniSAT::solver(const std::vector<int> &modelExpressions, std::vector<bool> &modelValues, const std::vector<int> &assumptions)
+bool ezMiniSAT::solver(const std::vector<int> &modelExpressions, std::vector<bool> &modelValues, const std::vector<int> &assumptions, std::vector<int> &failed)
 {
 	preSolverCallback();
 
 	solverTimoutStatus = false;
+
+	failed.clear();
 
 	if (0) {
 contradiction:
@@ -219,6 +222,19 @@ contradiction:
 		minisatSolver = NULL;
 		minisatVars.clear();
 #endif
+		if (minisatSolver->conflict.size()) {
+			int i = 0;
+			for (auto idx : extraClauses) {
+				bool idx_failed = false;
+				if (idx > 0)
+					idx_failed = minisatSolver->conflict.has(Minisat::mkLit(minisatVars.at(idx-1), true));
+				else
+					idx_failed = minisatSolver->conflict.has(Minisat::mkLit(minisatVars.at(-idx-1)));
+				int assumption = assumptions[i++];
+				if (idx_failed)
+					failed.push_back(assumption);
+			}
+		}
 		return false;
 	}
 

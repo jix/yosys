@@ -130,13 +130,13 @@ void msg_func(msg_type_t msg_type, const char *message_id, linefile_type linefil
 
 	if (log_verific_callback) {
 		string full_message = stringf("%s%s\n", message_prefix.c_str(), message.c_str());
-#ifdef VERIFIC_LINEFILE_INCLUDES_COLUMNS 
-		log_verific_callback(int(msg_type), message_id, LineFile::GetFileName(linefile), 
-			linefile ? linefile->GetLeftLine() : 0, linefile ? linefile->GetLeftCol() : 0, 
+#ifdef VERIFIC_LINEFILE_INCLUDES_COLUMNS
+		log_verific_callback(int(msg_type), message_id, LineFile::GetFileName(linefile),
+			linefile ? linefile->GetLeftLine() : 0, linefile ? linefile->GetLeftCol() : 0,
 			linefile ? linefile->GetRightLine() : 0, linefile ? linefile->GetRightCol() : 0, full_message.c_str());
 #else
-		log_verific_callback(int(msg_type), message_id, LineFile::GetFileName(linefile), 
-			linefile ? LineFile::GetLineNo(linefile) : 0, 0, 
+		log_verific_callback(int(msg_type), message_id, LineFile::GetFileName(linefile),
+			linefile ? LineFile::GetLineNo(linefile) : 0, 0,
 			linefile ? LineFile::GetLineNo(linefile) : 0, 0, full_message.c_str());
 #endif
 	} else {
@@ -304,7 +304,7 @@ static const  RTLIL::Const extract_vhdl_const(const char *value, bool output_sig
 		bool isBinary = std::all_of(data.begin(), data.end(), [](char c) {return c=='1' || c=='0'; });
 		if (isBinary)
 			c = RTLIL::Const::from_string(data);
-		else 
+		else
 			c = RTLIL::Const(data);
 	} else if (val.size()==3 && val[0]=='\'' && val.back()=='\'') {
 		c = RTLIL::Const::from_string(val.substr(1,val.size()-2));
@@ -394,7 +394,7 @@ static const RTLIL::Const verific_const(const char* type_name, const char *value
 	// SystemVerilog
 	if (type_name && strcmp(type_name, "real")==0) {
 		return extract_real_value(val);
-	} else 
+	} else
 		return extract_verilog_const(value, allow_string, output_signed);
 }
 
@@ -416,7 +416,7 @@ void VerificImporter::import_attributes(dict<RTLIL::IdString, RTLIL::Const> &att
 	MapIter mi;
 	Att *attr;
 
-#ifdef VERIFIC_LINEFILE_INCLUDES_COLUMNS 
+#ifdef VERIFIC_LINEFILE_INCLUDES_COLUMNS
 	if (obj->Linefile())
 		attributes[ID::src] = stringf("%s:%d.%d-%d.%d", LineFile::GetFileName(obj->Linefile()), obj->Linefile()->GetLeftLine(), obj->Linefile()->GetLeftCol(), obj->Linefile()->GetRightLine(), obj->Linefile()->GetRightCol());
 #else
@@ -1263,7 +1263,7 @@ bool VerificImporter::import_netlist_instance_cells(Instance *inst, RTLIL::IdStr
 			for (unsigned j = 0 ; j < selector->GetNumConditions(i) ; ++j) {
 				Array left_bound, right_bound ;
 				selector->GetCondition(i, j, &left_bound, &right_bound);
-			
+
 				SigSpec sel_left = sig_select_values.extract(offset_select, select_width);
 				offset_select += select_width;
 
@@ -1493,7 +1493,7 @@ void VerificImporter::import_netlist(RTLIL::Design *design, Netlist *nl, std::ma
 		char *architecture_name = name_space.ReName(nl->Name()) ;
 		module->set_string_attribute(ID(architecture), (architecture_name) ? architecture_name : nl->Name());
 	}
-#endif	
+#endif
 	const char *param_name ;
 	const char *param_value ;
 	MapIter mi;
@@ -2741,13 +2741,13 @@ void save_blackbox_msg_state()
 void restore_blackbox_msg_state()
 {
 #ifdef VERIFIC_SYSTEMVERILOG_SUPPORT
-	Message::ClearMessageType("VERI-1063") ; 
+	Message::ClearMessageType("VERI-1063") ;
 	if (Message::GetMessageType("VERI-1063")!=prev_1063)
 		Message::SetMessageType("VERI-1063", prev_1063);
 #endif
 #ifdef VERIFIC_VHDL_SUPPORT
-	Message::ClearMessageType("VHDL-1240") ; 
-	Message::ClearMessageType("VHDL-1241") ; 
+	Message::ClearMessageType("VHDL-1240") ;
+	Message::ClearMessageType("VHDL-1241") ;
 	if (Message::GetMessageType("VHDL-1240")!=prev_1240)
 		Message::SetMessageType("VHDL-1240", prev_1240);
 	if (Message::GetMessageType("VHDL-1241")!=prev_1241)
@@ -3313,7 +3313,7 @@ struct VerificPass : public Pass {
 		log("\n");
 #if defined(YOSYS_ENABLE_VERIFIC) and defined(YOSYSHQ_VERIFIC_EXTENSIONS)
 		VerificExtensions::Help();
-#endif	
+#endif
 		log("Use YosysHQ Tabby CAD Suite if you need Yosys+Verific.\n");
 		log("https://www.yosyshq.com/\n");
 		log("\n");
@@ -3369,7 +3369,7 @@ struct VerificPass : public Pass {
 		VhdlPrimaryUnit *unit ;
 		if (!flag_lib) return;
 		VhdlLibrary *vhdl_lib = vhdl_file::GetLibrary(work.c_str(), 1);
-		if (vhdl_lib) {					
+		if (vhdl_lib) {
 			FOREACH_VHDL_PRIMARY_UNIT(vhdl_lib, mi, unit) {
 				if (!unit) continue;
 				map.Insert(unit,unit);
@@ -3401,7 +3401,7 @@ struct VerificPass : public Pass {
 		VeriModule *veri_module ;
 		if (!flag_lib) return;
 		VeriLibrary *veri_lib = veri_file::GetLibrary(work.c_str(), 1);
-		if (veri_lib) {					
+		if (veri_lib) {
 			FOREACH_VERILOG_MODULE_IN_LIBRARY(veri_lib, mi, veri_module) {
 				if (!veri_module) continue;
 				map.Insert(veri_module,veri_module);
@@ -4246,12 +4246,12 @@ struct VerificPass : public Pass {
 			}
 		}
 #ifdef YOSYSHQ_VERIFIC_EXTENSIONS
-		if (VerificExtensions::Execute(args, argidx, work, 
+		if (VerificExtensions::Execute(args, argidx, work,
 			[this](const std::vector<std::string> &args, size_t argidx, std::string msg)
 				{ cmd_error(args, argidx, msg); } )) {
 			goto check_error;
 		}
-#endif	
+#endif
 
 		cmd_error(args, argidx, "Missing or unsupported mode parameter.\n");
 

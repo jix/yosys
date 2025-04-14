@@ -65,7 +65,7 @@ public:
 	virtual void freeze(int id);
 	virtual bool eliminated(int idx);
 #endif
-	virtual bool solver(const std::vector<int> &modelExpressions, std::vector<bool> &modelValues, const std::vector<int> &assumptions);
+	virtual bool solver(const std::vector<int> &modelExpressions, std::vector<bool> &modelValues, const std::vector<int> &assumptions, std::vector<int> &failed);
 };
 
 #endif
