@@ -68,6 +68,8 @@ struct HierDirtyFlags
 	HierDirtyFlags *parent;
 	pool<SigBit> dirty_bits;
 	pool<Cell*> dirty_cells;
+	pool<Cell*> seen_cells;
+	pool<Cell*> late_cells;
 	pool<SigBit> sticky_dirty_bits;
 	dict<IdString, HierDirtyFlags*> children;
 	string prefix, log_prefix;
@@ -123,7 +125,13 @@ struct HierDirtyFlags
 		if (dirty_cells.count(cell))
 			return;
 
-		dirty_cells.insert(cell);
+
+		if (seen_cells.count(cell)) {
+			late_cells.insert(cell);
+		} else {
+			dirty_cells.insert(cell);
+			seen_cells.insert(cell);
+		}
 
 		HierDirtyFlags *p = this;
 		while (p != nullptr) {
@@ -232,20 +240,23 @@ struct SimplecWorker
 		if (generated_utils.count(util_name) == 0)
 		{
 			util_ifdef_guard(util_name);
-			util_declarations.push_back(stringf("static inline bool %s(const %s *sig)", util_name.c_str(), sigtype(n).c_str()));
-			util_declarations.push_back(stringf("{"));
+			// util_declarations.push_back(stringf("static inline bool %s(const %s *sig)", util_name.c_str(), sigtype(n).c_str()));
+			// util_declarations.push_back(stringf("{"));
 
 			int word_idx = idx / max_uintsize, word_offset = idx % max_uintsize;
 			string value_name = stringf("value_%d_%d", std::min(n-1, (word_idx+1)*max_uintsize-1), word_idx*max_uintsize);
 
-			util_declarations.push_back(stringf("  return (sig->%s >> %d) & 1;", value_name.c_str(), word_offset));
+			// util_declarations.push_back(stringf("  return (sig->%s >> %d) & 1;", value_name.c_str(), word_offset));
 
-			util_declarations.push_back(stringf("}"));
+			// util_declarations.push_back(stringf("}"));
+
+			util_declarations.push_back(stringf("#define %s(SIG) (((uint64_t)(SIG).%s >> %d) & 1)", util_name.c_str(), value_name.c_str(), word_offset));
+
 			util_declarations.push_back(stringf("#endif"));
 			generated_utils.insert(util_name);
 		}
 
-		return stringf("%s(&%s)", util_name.c_str(), signame.c_str());
+		return stringf("%s(%s)", util_name.c_str(), signame.c_str());
 	}
 
 	string util_set_bit(const string &signame, int n, int idx, const string &expr)
@@ -258,28 +269,32 @@ struct SimplecWorker
 		if (generated_utils.count(util_name) == 0)
 		{
 			util_ifdef_guard(util_name);
-			util_declarations.push_back(stringf("static inline void %s(%s *sig, bool value)", util_name.c_str(), sigtype(n).c_str()));
-			util_declarations.push_back(stringf("{"));
+		// 	util_declarations.push_back(stringf("static inline void %s(%s *sig, bool value)", util_name.c_str(), sigtype(n).c_str()));
+		// 	util_declarations.push_back(stringf("{"));
 
 			int word_idx = idx / max_uintsize, word_offset = idx % max_uintsize;
 			string value_name = stringf("value_%d_%d", std::min(n-1, (word_idx+1)*max_uintsize-1), word_idx*max_uintsize);
 
-		#if 0
-			util_declarations.push_back(stringf("  if (value)"));
-			util_declarations.push_back(stringf("    sig->%s |= 1UL << %d;", value_name.c_str(), word_offset));
-			util_declarations.push_back(stringf("  else"));
-			util_declarations.push_back(stringf("    sig->%s &= ~(1UL << %d);", value_name.c_str(), word_offset));
-		#else
-			util_declarations.push_back(stringf("    sig->%s = (sig->%s & ~((uint%d_t)1 << %d)) | ((uint%d_t)value << %d);",
-					value_name.c_str(), value_name.c_str(), max_uintsize, word_offset, max_uintsize, word_offset));
-		#endif
+		// #if 0
+		// 	util_declarations.push_back(stringf("  if (value)"));
+		// 	util_declarations.push_back(stringf("    sig->%s |= 1UL << %d;", value_name.c_str(), word_offset));
+		// 	util_declarations.push_back(stringf("  else"));
+		// 	util_declarations.push_back(stringf("    sig->%s &= ~(1UL << %d);", value_name.c_str(), word_offset));
+		// #else
+		// 	util_declarations.push_back(stringf("    sig->%s = (sig->%s & ~((uint%d_t)1 << %d)) | ((uint%d_t)value << %d);",
+		// 			value_name.c_str(), value_name.c_str(), max_uintsize, word_offset, max_uintsize, word_offset));
+		// #endif
 
-			util_declarations.push_back(stringf("}"));
+		// 	util_declarations.push_back(stringf("}"));
+
+			util_declarations.push_back(stringf("#define %s(SIG, VAL) (SIG).%s = ((uint64_t)(SIG).%s) & (~(1ull << %d)) | ((uint64_t)(VAL) << %d)", util_name.c_str(), value_name.c_str(), value_name.c_str(), word_offset, word_offset));
+
+
 			util_declarations.push_back(stringf("#endif"));
 			generated_utils.insert(util_name);
 		}
 
-		return stringf("  %s(&%s, %s);", util_name.c_str(), signame.c_str(), expr.c_str());
+		return stringf("  %s(%s, %s);", util_name.c_str(), signame.c_str(), expr.c_str());
 	}
 
 	void create_module_struct(Module *mod)
@@ -506,8 +521,20 @@ struct SimplecWorker
 			if (verbose && (!work->dirty_bits.empty() || !work->dirty_cells.empty()))
 				log("  In %s:\n", work->log_prefix.c_str());
 
-			while (!work->dirty_bits.empty() || !work->dirty_cells.empty())
+			while (!work->dirty_bits.empty() || !work->dirty_cells.empty() || !work->late_cells.empty())
 			{
+				if (work->dirty_cells.empty() && !work->late_cells.empty()) {
+					std::swap(work->dirty_cells, work->late_cells);
+					work->seen_cells.clear();
+				}
+				log("dirty_bits size: %d\n", GetSize(work->dirty_bits));
+				if (work->dirty_bits.size() == 1) {
+					for (auto bit : work->dirty_bits) {
+						log("dirty bit is %s\n", log_signal(bit));
+					}
+				}
+				log("dirty_cells size: %d\n", GetSize(work->dirty_cells));
+				log_flush();
 				if (!work->dirty_bits.empty())
 				{
 					SigSpec dirtysig(work->dirty_bits);
