@@ -80,6 +80,7 @@ struct EmptyVariant {
 		(void)context;
 		format_into(target);
 	}
+	std::string dot_node_color() const { return "white"; }
 };
 
 struct RepetitionRange {
@@ -140,8 +141,12 @@ struct RepetitionRange {
 		} else if (max == -1) {
 			if (min == 0 && !prefix[0])
 				target += stringf("[%s*]", prefix);
+			else if (min == 0 && prefix[0] == '*')
+				target += stringf("[%s]", prefix);
 			else if (min == 1 && !prefix[0])
 				target += stringf("[%s+]", prefix);
+			else if (min == 1 && prefix[0] == '*')
+				target += stringf("[+%s]", prefix + 1);
 			else
 				target += stringf("[%s%d:$]", prefix, min);
 		} else {
@@ -230,12 +235,31 @@ struct AstConcatSeq {
 	}
 };
 
+struct AstDelaySeq {
+	RepetitionRange delay;
+	AstSeqId seq;
+
+	void format_into(std::string &target, Ast *ast = nullptr) const
+	{
+		target += "##";
+		delay.format_into(target);
+		target += ' ';
+		seq.format_into(target, ast);
+	}
+};
+
 struct AstRepeatSeq {
-	enum {
+	enum class Type {
 		CONSECUTIVE,
 		NONCONSECUTIVE,
 		GOTO,
+		OVERLAPPING, // used internally during lowering
 	} type;
+	static constexpr Type CONSECUTIVE = Type::CONSECUTIVE;
+	static constexpr Type NONCONSECUTIVE = Type::NONCONSECUTIVE;
+	static constexpr Type GOTO = Type::GOTO;
+	static constexpr Type OVERLAPPING = Type::OVERLAPPING;
+
 	AstSeqId seq;
 	RepetitionRange repeats;
 
@@ -243,18 +267,36 @@ struct AstRepeatSeq {
 	{
 		seq.format_into(target, ast);
 		target += ' ';
-		repeats.format_into(target, type == GOTO ? "->" : type == NONCONSECUTIVE ? "=" : "");
+		switch (type) {
+		case GOTO:
+			repeats.format_into(target, "->");
+			break;
+		case NONCONSECUTIVE:
+			repeats.format_into(target, "=");
+			break;
+		case CONSECUTIVE:
+			repeats.format_into(target, "*");
+			break;
+		case OVERLAPPING:
+			repeats.format_into(target, "#-#");
+			break;
+		}
 	}
 };
 
 struct AstBinaryOpSeq {
-	enum {
+	enum class Type {
 		OR,
 		AND,
 		THROUGHOUT,
 		INTERSECT,
 		WITHIN,
 	} type;
+	static constexpr Type OR = Type::OR;
+	static constexpr Type AND = Type::AND;
+	static constexpr Type THROUGHOUT = Type::THROUGHOUT;
+	static constexpr Type INTERSECT = Type::INTERSECT;
+	static constexpr Type WITHIN = Type::WITHIN;
 
 	std::array<AstSeqId, 2> seqs;
 
@@ -292,7 +334,8 @@ struct AstFirstMatchSeq {
 	}
 };
 
-typedef std::variant<EmptyVariant, AstBoolSeq, AstConcatSeq, AstRepeatSeq, AstBinaryOpSeq, AstFirstMatchSeq, AstUnhandled> AstSeqNodeVariant;
+typedef std::variant<EmptyVariant, AstBoolSeq, AstConcatSeq, AstDelaySeq, AstRepeatSeq, AstBinaryOpSeq, AstFirstMatchSeq, AstUnhandled>
+  AstSeqNodeVariant;
 
 struct AstSeqNode : public AstSeqNodeVariant {
 	using AstSeqNodeVariant::variant;
@@ -332,8 +375,14 @@ struct AstBoolProp : public AstBool {
 };
 
 struct AstImplProp {
-	enum { IMPL, FOLLOWED_BY } type;
-	enum { OVERLAPPING, NONOVERLAPPING } overlap;
+	enum class Type { IMPL, FOLLOWED_BY } type;
+	static constexpr Type IMPL = Type::IMPL;
+	static constexpr Type FOLLOWED_BY = Type::FOLLOWED_BY;
+
+	enum class Overlap { OVERLAPPING, NONOVERLAPPING } overlap;
+	static constexpr Overlap OVERLAPPING = Overlap::OVERLAPPING;
+	static constexpr Overlap NONOVERLAPPING = Overlap::NONOVERLAPPING;
+
 	AstSeqId seq;
 	AstPropId prop;
 
@@ -341,13 +390,18 @@ struct AstImplProp {
 	{
 		char mid[8] = " ??? ";
 		mid[1] = type == IMPL ? '|' : '#';
-		mid[2] = type == OVERLAPPING ? '-' : '=';
+		mid[2] = overlap == OVERLAPPING ? '-' : '=';
 		mid[3] = type == IMPL ? '>' : '#';
 
 		seq.format_into(target, ast);
 		target += mid;
 		prop.format_into(target, ast);
 	}
+};
+
+AstImplProp::Type operator!(AstImplProp::Type type)
+{
+	return type == AstImplProp::Type::IMPL ? AstImplProp::Type::FOLLOWED_BY : AstImplProp::Type::IMPL;
 };
 
 struct AstNotProp {
@@ -361,7 +415,12 @@ struct AstNotProp {
 };
 
 struct AstLogicProp {
-	enum { AND, OR, IMPLIES, IFF } type;
+	enum class Type { AND, OR, IMPLIES, IFF } type;
+	static constexpr Type AND = Type::AND;
+	static constexpr Type OR = Type::OR;
+	static constexpr Type IMPLIES = Type::IMPLIES;
+	static constexpr Type IFF = Type::IFF;
+
 	std::array<AstPropId, 2> prop;
 	void format_into(std::string &target, Ast *ast = nullptr) const
 	{
@@ -446,14 +505,15 @@ static std::string dot_escape_html(
 	return escaped;
 }
 
-static std::string dot_table_box(std::string escaped_inner)
+static std::string dot_table_box(std::string escaped_inner, bool border = true)
 {
-	return "<table border=\"1\" cellborder=\"0\" cellspacing=\"0\" cellpadding=\"0\"><tr>"
-	       "<td height=\"2\"></td></tr><tr><td> </td><td>"
-	       "<table border=\"0\" cellborder=\"0\" cellspacing=\"0\" cellpadding=\"0\"><tr><td>" +
-	       escaped_inner +
-	       "</td></tr></table>"
-	       "</td><td> </td></tr></table>";
+	return stringf("<table border=\"%d\" cellborder=\"0\" cellspacing=\"0\" cellpadding=\"0\"><tr>"
+		       "<td height=\"2\"></td></tr><tr><td> </td><td>"
+		       "<table border=\"0\" cellborder=\"0\" cellspacing=\"0\" cellpadding=\"0\"><tr><td>"
+		       "%s"
+		       "</td></tr></table>"
+		       "</td><td> </td></tr></table>",
+		       (int)border, escaped_inner.c_str());
 }
 
 static std::string dot_escape_with_ports(std::string with_ports)
@@ -539,8 +599,8 @@ struct Ast {
 		out << "  node [shape=plain, style=filled];\n";
 		dot_mode = true;
 
-		write_dot_nodes<AstSeqId, AstSeqNode>(out, seqs, "mistyrose");
-		write_dot_nodes<AstPropId, AstPropNode>(out, props, "honeydew");
+		write_dot_nodes<AstSeqId, AstSeqNode>(out, seqs, "#ccccff");
+		write_dot_nodes<AstPropId, AstPropNode>(out, props, "#ffffaa");
 
 		if (root.has_value()) {
 			out << "  root [label=<root>,style=solid];\n";
@@ -562,7 +622,7 @@ struct Ast {
 			std::string node_name = format(Id(i));
 			std::string label = dot_escape_html(node_name + "\n") + dot_escape_with_ports(format(nodes[i], this));
 
-			out << stringf("  %s [label=<%s>,fillcolor=%s];\n", node_name.c_str(), dot_table_box(label).c_str(), color);
+			out << stringf("  %s [label=<%s>,fillcolor=\"%s\"];\n", node_name.c_str(), dot_table_box(label).c_str(), color);
 
 			int link_nr = 0;
 			for (auto dot_link : dot_links) {
@@ -589,7 +649,7 @@ struct Ast {
 		// I haven't double checked whether this is correct for non-consecutive
 		// repetitions of non-boolean sequences, which are not valid SVA input
 		// syntax.
-		return seq.repeats.min == 0 || admits_empty(seq.seq);
+		return seq.type != AstRepeatSeq::OVERLAPPING && (seq.repeats.min == 0 || admits_empty(seq.seq));
 	}
 
 	bool admits_empty(AstBinaryOpSeq const &seq, AstSeqId seq_id)
@@ -612,7 +672,7 @@ struct Ast {
 	{
 		if (!admits_empty(seq))
 			return seq;
-		AstSeqId one = new_seq(AstBool{State::S1});
+		AstSeqId one = new_seq(AstBoolSeq{State::S1});
 		AstSeqId ones = new_seq(AstRepeatSeq{AstRepeatSeq::CONSECUTIVE, one, RepetitionRange::plus()});
 		return new_seq(AstBinaryOpSeq{AstBinaryOpSeq::INTERSECT, {{seq, ones}}});
 	}
@@ -645,6 +705,14 @@ struct Ast {
 		}
 	}
 
+	AstSeqId lower(AstRepeatSeq const &seq, AstSeqId seq_id)
+	{
+		if (admits_empty(seq_id) || seq.type != AstRepeatSeq::CONSECUTIVE)
+			return seq_id; // TODO
+		return new_seq(
+		  AstConcatSeq{{{seq.seq, new_seq(AstRepeatSeq{AstRepeatSeq::OVERLAPPING, new_seq(AstDelaySeq{1, seq.seq}), seq.repeats - 1})}}, 0});
+	}
+
 	template <class T>
 	AstSeqId lower(T const &seq, AstSeqId seq_id)
 	{
@@ -661,6 +729,12 @@ struct Ast {
 	{
 		(void)prop_id;
 		return negated(prop.prop, true);
+	}
+
+	AstPropId lower(AstSeqProp const &prop, AstPropId prop_id)
+	{
+		(void)prop_id;
+		return new_prop(AstImplProp{AstImplProp::FOLLOWED_BY, AstImplProp::OVERLAPPING, prop.seq, new_prop(AstBoolProp{State::S1})});
 	}
 
 	AstPropId lower(AstLogicProp const &prop, AstPropId prop_id)
@@ -696,6 +770,18 @@ struct Ast {
 		return prop.prop;
 	}
 
+	AstPropId negated(AstClockProp const &prop, AstPropId prop_id, bool for_positive_normal_form)
+	{
+		(void)prop_id, (void)for_positive_normal_form;
+		return new_prop(AstClockProp{prop.clocking, negated(prop.prop)});
+	}
+
+	AstPropId negated(AstImplProp const &prop, AstPropId prop_id, bool for_positive_normal_form)
+	{
+		(void)prop_id, (void)for_positive_normal_form;
+		return new_prop(AstImplProp{!prop.type, prop.overlap, prop.seq, negated(prop.prop)});
+	}
+
 	AstPropId negated(AstSeqProp const &prop, AstPropId prop_id, bool for_positive_normal_form)
 	{
 		(void)prop_id, (void)for_positive_normal_form;
@@ -704,6 +790,7 @@ struct Ast {
 
 	AstPropId negated(AstNexttimeProp const &prop, AstPropId prop_id, bool for_positive_normal_form)
 	{
+		(void)prop_id, (void)for_positive_normal_form;
 		return new_prop(AstNexttimeProp{prop.ticks, negated(prop.prop)});
 	}
 
@@ -957,6 +1044,7 @@ struct FsmNext {
 		target += " ";
 		next.format_into(target, fsm);
 	}
+	std::string dot_node_color() const { return "#eeeeee"; }
 };
 
 struct FsmBranch {
@@ -972,13 +1060,16 @@ struct FsmBranch {
 		target += " : ";
 		if_false.format_into(target, fsm);
 	}
+	std::string dot_node_color() const { return "#ffffaa"; }
 };
 
 struct FsmCombine {
-	enum {
+	enum class Type {
 		OR,
 		AND,
 	} type;
+	static constexpr Type OR = Type::OR;
+	static constexpr Type AND = Type::AND;
 	pool<FsmStateId> states;
 
 	void format_into(std::string &target, Fsm *fsm = nullptr) const
@@ -995,41 +1086,63 @@ struct FsmCombine {
 			state.format_into(target, fsm);
 		}
 	}
+	std::string dot_node_color() const { return type == OR ? "#ffffff" : "#ffddcc"; }
 };
 
-struct FsmIntersect {
-	pool<FsmStateId> states;
-	FsmStateId accept;
-	FsmStateId reject;
+struct FsmSeq {
+	typedef AstImplProp::Type Type;
+	AstImplProp::Type type;
+	static constexpr Type IMPL = Type::IMPL;
+	static constexpr Type FOLLOWED_BY = Type::FOLLOWED_BY;
+
+	FsmStateId seq;
+	FsmStateId then;
 
 	void format_into(std::string &target, Fsm *fsm = nullptr) const
 	{
-		if (states.empty()) {
-			target += "??? /* empty intersection */";
+		if (type == IMPL) {
+			target += "forall ";
+			seq.format_into(target, fsm);
+			target += " require ";
+			then.format_into(target, fsm);
 		} else {
-			bool first = true;
-			for (auto state : states) {
-				if (!first)
-					target += " intersect ";
-				first = false;
-				state.format_into(target, fsm);
-			}
+			target += "exists ";
+			seq.format_into(target, fsm);
+			target += " with ";
+			then.format_into(target, fsm);
 		}
-		target += " ? ";
-		accept.format_into(target, fsm);
-		target += " : ";
-		reject.format_into(target, fsm);
 	}
+	std::string dot_node_color() const { return type == IMPL ? "#ffaaff" : "#aaffff"; }
+};
+
+struct FsmRepeat {
+	FsmStateId seq;
+	RepetitionRange count;
+
+	void format_into(std::string &target, Fsm *fsm = nullptr) const
+	{
+		target += "repeat ";
+		seq.format_into(target, fsm);
+		target += " ";
+		count.format_into(target);
+	}
+	std::string dot_node_color() const { return "#ccccff"; }
 };
 
 struct FsmSink {
-	enum { REJECT, ACCEPT } type;
+	enum class Type {
+		REJECT,
+		ACCEPT,
+	} type;
+	static constexpr Type REJECT = Type::REJECT;
+	static constexpr Type ACCEPT = Type::ACCEPT;
 
 	void format_into(std::string &target, Fsm *fsm = nullptr) const
 	{
 		(void)fsm;
 		target += type == ACCEPT ? "ACCEPT" : "REJECT";
 	}
+	std::string dot_node_color() const { return type == ACCEPT ? "#aaffaa" : "#ffcccc"; }
 };
 
 struct FsmUnhandled {
@@ -1037,9 +1150,10 @@ struct FsmUnhandled {
 	std::array<FsmStateId, 2> next = {};
 
 	void format_into(std::string &target, Fsm *fsm = nullptr) const;
+	std::string dot_node_color() const { return "#ff8888"; }
 };
 
-typedef std::variant<EmptyVariant, FsmUnhandled, FsmSink, FsmNext, FsmBranch, FsmCombine, FsmIntersect> FsmStateVariant;
+typedef std::variant<EmptyVariant, FsmUnhandled, FsmSink, FsmNext, FsmBranch, FsmCombine, FsmRepeat, FsmSeq> FsmStateVariant;
 
 struct FsmState : public FsmStateVariant {
 	using FsmStateVariant::variant;
@@ -1068,6 +1182,11 @@ struct FsmState : public FsmStateVariant {
 	void format_into(std::string &target, Fsm *fsm = nullptr) const
 	{
 		std::visit([&](auto &&arg) { arg.format_into(target, fsm); }, *this);
+	}
+
+	std::string dot_node_color() const
+	{
+		return std::visit([&](auto &&arg) { return arg.dot_node_color(); }, *this);
 	}
 };
 
@@ -1114,7 +1233,7 @@ struct Fsm {
 	{
 		std::ofstream out(path);
 		out << "digraph {\n";
-		out << "  node [shape=plain];\n";
+		out << "  node [shape=rect, style=\"rounded,filled\", margin=0];\n";
 		dot_mode = true;
 
 		for (int i = 0; i < GetSize(states); ++i) {
@@ -1125,7 +1244,8 @@ struct Fsm {
 			std::string node_name = format(FsmStateId(i));
 			std::string label = dot_escape_html(node_name + "\n") + dot_escape_with_ports(format(states[i], this));
 
-			out << stringf("  %s [label=<%s>];\n", node_name.c_str(), dot_table_box(label).c_str());
+			out << stringf("  %s [label=<%s>, fillcolor=\"%s\"];\n", node_name.c_str(), dot_table_box(label, false).c_str(),
+				       states[i].dot_node_color().c_str());
 
 			int link_nr = 0;
 			for (auto dot_link : dot_links) {
@@ -1135,7 +1255,7 @@ struct Fsm {
 		}
 
 		if (init.has_value()) {
-			out << "  init [label=<init>];\n";
+			out << "  init [label=<init>,shape=plain,style=solid];\n";
 			out << stringf("  init -> %s;\n", format(init.value()).c_str());
 		}
 
@@ -1206,20 +1326,13 @@ struct AstToFsmWorker {
 
 	FsmStateId convert_property(AstImplProp const &prop, AstPropId prop_id)
 	{
-		(void)prop_id;
-		FsmStateId following_prop = convert_property(prop.prop);
+		if (prop.overlap != AstImplProp::OVERLAPPING)
+			return convert_property(prop, prop_id, std::nullopt);
 
-		int delay = prop.overlap == AstImplProp::NONOVERLAPPING ? 1 : 0;
+		FsmStateId then_prop = convert_property(prop.prop);
+		FsmStateId match_seq = convert_sequence(prop.seq);
 
-		return convert_sequence(prop.seq, fsm.new_state(FsmNext{following_prop, delay}),
-					prop.type == AstImplProp::IMPL ? fsm.new_state(FsmSink{FsmSink::ACCEPT})
-								       : fsm.new_state(FsmSink{FsmSink::REJECT}));
-	}
-
-	FsmStateId convert_property(AstSeqProp const &prop, AstPropId prop_id)
-	{
-		(void)prop_id;
-		return convert_sequence(prop.seq, fsm.new_state(FsmSink{FsmSink::ACCEPT}), fsm.new_state(FsmSink{FsmSink::REJECT}));
+		return fsm.new_state(FsmSeq{prop.type, match_seq, then_prop});
 	}
 
 	FsmStateId convert_property(AstBoolProp const &prop, AstPropId prop_id)
@@ -1270,65 +1383,59 @@ struct AstToFsmWorker {
 
 	FsmStateId convert_sequence(AstSeqId seq)
 	{
-		return convert_sequence(seq, fsm.new_state(FsmSink{FsmSink::ACCEPT}), fsm.new_state(FsmSink{FsmSink::REJECT}));
+		// TODO simplify modulo changes in empty admittance
+		return std::visit([&](auto &&arg) { return convert_sequence(arg, seq); }, ast[seq]);
 	}
 
-	FsmStateId convert_sequence(AstSeqId seq, FsmStateId accept, FsmStateId reject)
-	{
-		return std::visit([&](auto &&arg) { return convert_sequence(arg, seq, accept, reject); }, ast[seq]);
-	}
-
-	FsmStateId convert_sequence(AstConcatSeq const &seq, AstSeqId seq_id, FsmStateId accept, FsmStateId reject)
+	FsmStateId convert_sequence(AstConcatSeq const &seq, AstSeqId seq_id)
 	{
 		auto [prefix, suffix] = seq.seqs;
 		bool prefix_admits_empty = ast.admits_empty(prefix);
 		bool suffix_admits_empty = ast.admits_empty(suffix);
 
-		AstSeqId non_empty_prefix = ast.remove_empty(prefix);
-		AstSeqId non_empty_suffix = ast.remove_empty(suffix);
+		FsmStateId suffix_init = convert_sequence(suffix);
 
-		FsmStateId following_seq = convert_sequence(non_empty_suffix, accept, reject);
-		FsmStateId on_seq_accept = fsm.new_state(FsmNext{following_seq, seq.delay});
-		FsmStateId with_non_empty_prefix = convert_sequence(prefix, on_seq_accept, reject);
+		FsmStateId prefix_init = convert_sequence(prefix);
 
+		FsmStateId delayed_suffix = fsm.new_state(FsmNext{suffix_init, seq.delay});
 
-		if (prefix_admits_empty || suffix_admits_empty) {
-			pool<FsmStateId> choices = {with_non_empty_prefix};
+		FsmStateId concatenation = fsm.new_state(FsmSeq{FsmSeq::FOLLOWED_BY, prefix_init, delayed_suffix});
 
+		if (seq.delay.max > 0 && (prefix_admits_empty || suffix_admits_empty)) {
+			pool<FsmStateId> choices = {concatenation};
 			if (prefix_admits_empty)
-			FsmStateId on_empty_prefix = fsm.new_state(FsmNext{following_seq, seq.delay - 1});
-			choices.insert(fsm.new_state(FsmCombine{FsmCombine::OR, {{with_non_empty_prefix, on_empty_prefix}}}));
+				choices.insert(fsm.new_state(FsmNext{suffix_init, seq.delay - 1}));
+			if (suffix_admits_empty) {
+				FsmStateId suffix_delay = fsm.new_state(FsmNext{fsm.new_state(FsmSink{FsmSink::ACCEPT}), seq.delay - 1});
+				choices.insert(fsm.new_state(FsmSeq{FsmSeq::FOLLOWED_BY, prefix_init, suffix_delay}));
+			}
+			return fsm.new_state(FsmCombine{FsmCombine::OR, choices});
 		}
 
-		//
-
-		// if
-		// if (seq.delay.min == 0) {
-		// 	if (seq.delay.max != 0) // mixed fusion / concatenation
-		// 		return convert_sequence(seq, seq_id, accept, reject, std::nullopt);
-
-		// 	FsmStateId ensure_non_empty = fsm.new_state(FsmNext{fsm.new_state(FsmSink{FsmSink::ACCEPT}), 1});
-
-		// 	FsmStateId following_seq = convert_sequence(seq.seqs[1], accept, reject);
-
-		// 	FsmStateId on_seq_accept = fsm.new_state(FsmNext{following_seq, seq.delay});
-
-		// } else {
-		// }
-
-		// if (seq.)
-		// 	// TODO I think there are issues with fusion of admits_empty sequences
-		// 	if (fsm)
-
-		// 		FsmStateId following_seq = convert_sequence(seq.seqs[1], accept, reject);
-
-		// FsmStateId on_seq_accept = fsm.new_state(FsmNext{following_seq, seq.delay});
-
-		// return convert_sequence(seq.seqs[0], on_seq_accept, reject);
+		return concatenation;
 	}
 
-	FsmStateId convert_sequence(AstBoolSeq const &seq, AstSeqId seq_id, FsmStateId accept, FsmStateId reject)
+	FsmStateId convert_sequence(AstDelaySeq const &seq, AstSeqId seq_id)
 	{
+		bool suffix_admits_empty = ast.admits_empty(seq.seq);
+
+		FsmStateId suffix_init = convert_sequence(seq.seq);
+		if (seq.delay.max == 0)
+			return suffix_init;
+
+		FsmStateId delayed_suffix = fsm.new_state(FsmNext{suffix_init, seq.delay});
+
+		if (suffix_admits_empty) {
+			FsmStateId delay = fsm.new_state(FsmNext{fsm.new_state(FsmSink{FsmSink::ACCEPT}), seq.delay - 1});
+			return fsm.new_state(FsmCombine{FsmCombine::OR, {{delayed_suffix, delay}}});
+		}
+		return delayed_suffix;
+	}
+
+	FsmStateId convert_sequence(AstBoolSeq const &seq, AstSeqId seq_id)
+	{
+		FsmStateId accept = fsm.new_state(FsmSink{FsmSink::ACCEPT});
+		FsmStateId reject = fsm.new_state(FsmSink{FsmSink::REJECT});
 		if (seq.is_constant())
 			return seq.constant_value() ? accept : reject;
 
@@ -1338,43 +1445,44 @@ struct AstToFsmWorker {
 		return fsm.new_state(FsmBranch{seq.atom, accept, reject});
 	}
 
-	FsmStateId convert_sequence(AstRepeatSeq const &seq, AstSeqId seq_id, FsmStateId accept, FsmStateId reject)
+	FsmStateId convert_sequence(AstRepeatSeq const &seq, AstSeqId seq_id)
 	{
 		switch (seq.type) {
 		case AstRepeatSeq::NONCONSECUTIVE:
 		case AstRepeatSeq::GOTO:
-			return convert_sequence(seq, seq_id, accept, reject, std::nullopt);
-		case AstRepeatSeq::CONSECUTIVE: {
-			return fsm.new_state(FsmNext{{}, 0});
+		case AstRepeatSeq::CONSECUTIVE:
+			return convert_sequence(seq, seq_id, std::nullopt);
+		case AstRepeatSeq::OVERLAPPING: {
+			return fsm.new_state(FsmRepeat{convert_sequence(seq.seq), seq.repeats});
 		}
 		}
 	}
 
-	FsmStateId convert_sequence(AstBinaryOpSeq const &seq, AstSeqId seq_id, FsmStateId accept, FsmStateId reject)
+	FsmStateId convert_sequence(AstBinaryOpSeq const &seq, AstSeqId seq_id)
 	{
 		switch (seq.type) {
-		case AstBinaryOpSeq::OR:
 		case AstBinaryOpSeq::AND:
 		case AstBinaryOpSeq::THROUGHOUT:
 		case AstBinaryOpSeq::WITHIN:
-			return convert_sequence(seq, seq_id, accept, reject, std::nullopt); // TODO
+			return convert_sequence(seq, seq_id, std::nullopt); // TODO
 		case AstBinaryOpSeq::INTERSECT:
-
-			return fsm.new_state(FsmIntersect{{{convert_sequence(seq.seqs[0]), convert_sequence(seq.seqs[1])}}, accept, reject});
+			return fsm.new_state(FsmCombine{FsmCombine::AND, {{convert_sequence(seq.seqs[0]), convert_sequence(seq.seqs[1])}}});
+		case AstBinaryOpSeq::OR:
+			return fsm.new_state(FsmCombine{FsmCombine::OR, {{convert_sequence(seq.seqs[0]), convert_sequence(seq.seqs[1])}}});
 		}
 	}
 
 	template <class T>
-	FsmStateId convert_sequence(T const &seq, AstSeqId seq_id, FsmStateId accept, FsmStateId reject, std::nullopt_t force_fallback = std::nullopt)
+	FsmStateId convert_sequence(T const &seq, AstSeqId seq_id, std::nullopt_t force_fallback = std::nullopt)
 	{
 		(void)force_fallback;
 		AstSeqId lowered_seq = ast.lower(seq_id);
 		if (lowered_seq != seq_id)
-			return convert_sequence(lowered_seq, accept, reject);
+			return convert_sequence(lowered_seq);
 
 		std::string message = stringf("unhandled variant: convert_sequence: %s = %s", format(seq_id).c_str(), format(seq).c_str());
 		log_warning("%s\n", message.c_str());
-		auto unhandled = FsmUnhandled{message, {{accept, reject}}};
+		auto unhandled = FsmUnhandled{message};
 		return fsm.new_state(unhandled);
 	}
 
@@ -1395,6 +1503,8 @@ void verific_import_new_impl(VerificImporter *importer, Verific::Instance *inst)
 	s.clear();
 	worker.ast_root.format_into(s, &worker.ast);
 	log("%s\n", s.c_str());
+
+	worker.ast_root = worker.ast.new_prop(AstNotProp{worker.ast_root});
 
 	AstToFsmWorker worker2;
 	worker2.ast = std::move(worker.ast);
