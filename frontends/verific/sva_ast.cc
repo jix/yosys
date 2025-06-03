@@ -632,9 +632,17 @@ struct Ast {
 		}
 	}
 
+	dict<AstSeqId, bool> admits_empty_cache;
+
 	bool admits_empty(AstSeqId seq_id)
 	{
-		return std::visit([&](auto &&seq) { return admits_empty(seq, seq_id); }, (*this)[seq_id]);
+		auto it = admits_empty_cache.find(seq_id);
+		if (it != admits_empty_cache.end())
+			return it->second;
+
+		bool result = std::visit([&](auto &&seq) { return admits_empty(seq, seq_id); }, (*this)[seq_id]);
+		admits_empty_cache[seq_id] = result;
+		return result;
 	}
 
 	bool admits_empty(AstBoolSeq const &seq, AstSeqId seq_id) { return false; }
@@ -668,15 +676,6 @@ struct Ast {
 
 	bool admits_empty(AstFirstMatchSeq const &seq, AstSeqId seq_id) { return admits_empty(seq.seq); }
 
-	AstSeqId remove_empty(AstSeqId seq)
-	{
-		if (!admits_empty(seq))
-			return seq;
-		AstSeqId one = new_seq(AstBoolSeq{State::S1});
-		AstSeqId ones = new_seq(AstRepeatSeq{AstRepeatSeq::CONSECUTIVE, one, RepetitionRange::plus()});
-		return new_seq(AstBinaryOpSeq{AstBinaryOpSeq::INTERSECT, {{seq, ones}}});
-	}
-
 	template <class T>
 	bool admits_empty(T const &seq, AstSeqId seq_id)
 	{
@@ -684,9 +683,18 @@ struct Ast {
 		return false;
 	}
 
+	dict<AstSeqId, AstSeqId> lower_seq_cache;
+	dict<AstPropId, AstPropId> lower_prop_cache;
+
 	AstSeqId lower(AstSeqId seq_id)
 	{
-		return std::visit([&](auto &&seq) { return lower(seq, seq_id); }, (*this)[seq_id]);
+		auto it = lower_seq_cache.find(seq_id);
+		if (it != lower_seq_cache.end())
+			return it->second;
+
+		auto result = std::visit([&](auto &&seq) { return lower(seq, seq_id); }, (*this)[seq_id]);
+		lower_seq_cache[seq_id] = result;
+		return result;
 	}
 
 	AstSeqId lower(AstBinaryOpSeq const &seq, AstSeqId seq_id)
@@ -722,13 +730,19 @@ struct Ast {
 
 	AstPropId lower(AstPropId prop)
 	{
-		return std::visit([&](auto &&arg) { return lower(arg, prop); }, (*this)[prop]);
+		auto it = lower_prop_cache.find(prop);
+		if (it != lower_prop_cache.end())
+			return it->second;
+
+		auto result = std::visit([&](auto &&arg) { return lower(arg, prop); }, (*this)[prop]);
+		lower_prop_cache[prop] = result;
+		return result;
 	}
 
 	AstPropId lower(AstNotProp const &prop, AstPropId prop_id)
 	{
 		(void)prop_id;
-		return negated(prop.prop, true);
+		return negated(prop.prop);
 	}
 
 	AstPropId lower(AstSeqProp const &prop, AstPropId prop_id)
@@ -744,7 +758,7 @@ struct Ast {
 		case AstLogicProp::OR:
 			return prop_id;
 		case AstLogicProp::IMPLIES:
-			return new_prop(AstLogicProp{AstLogicProp::OR, {{negated(prop.prop[0], true), prop.prop[1]}}});
+			return new_prop(AstLogicProp{AstLogicProp::OR, {{negated(prop.prop[0]), prop.prop[1]}}});
 		case AstLogicProp::IFF:
 			return new_prop(AstLogicProp{AstLogicProp::AND,
 						     {{new_prop(AstLogicProp{AstLogicProp::IMPLIES, {{prop.prop[0], prop.prop[1]}}}),
@@ -759,50 +773,58 @@ struct Ast {
 		return prop_id;
 	}
 
-	AstPropId negated(AstPropId prop, bool for_positive_normal_form = false)
+	dict<AstPropId, AstPropId> negated_cache;
+
+	AstPropId negated(AstPropId prop)
 	{
-		return std::visit([&](auto &&arg) { return negated(arg, prop, for_positive_normal_form); }, (*this)[prop]);
+		auto it = negated_cache.find(prop);
+		if (it != negated_cache.end())
+			return it->second;
+
+		auto result = std::visit([&](auto &&arg) { return negated(arg, prop); }, (*this)[prop]);
+		negated_cache[prop] = result;
+		if (!std::holds_alternative<AstNotProp>((*this)[prop])) {
+			negated_cache[result] = prop;
+		}
+		return result;
 	}
 
-	AstPropId negated(AstNotProp const &prop, AstPropId prop_id, bool for_positive_normal_form)
+	AstPropId negated(AstNotProp const &prop, AstPropId prop_id)
 	{
-		(void)prop_id, (void)for_positive_normal_form;
+		(void)prop_id;
 		return prop.prop;
 	}
 
-	AstPropId negated(AstClockProp const &prop, AstPropId prop_id, bool for_positive_normal_form)
+	AstPropId negated(AstClockProp const &prop, AstPropId prop_id)
 	{
-		(void)prop_id, (void)for_positive_normal_form;
+		(void)prop_id;
 		return new_prop(AstClockProp{prop.clocking, negated(prop.prop)});
 	}
 
-	AstPropId negated(AstImplProp const &prop, AstPropId prop_id, bool for_positive_normal_form)
+	AstPropId negated(AstImplProp const &prop, AstPropId prop_id)
 	{
-		(void)prop_id, (void)for_positive_normal_form;
+		(void)prop_id;
 		return new_prop(AstImplProp{!prop.type, prop.overlap, prop.seq, negated(prop.prop)});
 	}
 
-	AstPropId negated(AstSeqProp const &prop, AstPropId prop_id, bool for_positive_normal_form)
+	AstPropId negated(AstSeqProp const &prop, AstPropId prop_id)
 	{
-		(void)prop_id, (void)for_positive_normal_form;
+		(void)prop_id;
 		return new_prop(AstImplProp{AstImplProp::IMPL, AstImplProp::OVERLAPPING, prop.seq, new_prop(AstBoolProp{SigBit(State::S0)})});
 	}
 
-	AstPropId negated(AstNexttimeProp const &prop, AstPropId prop_id, bool for_positive_normal_form)
+	AstPropId negated(AstNexttimeProp const &prop, AstPropId prop_id)
 	{
-		(void)prop_id, (void)for_positive_normal_form;
+		(void)prop_id;
 		return new_prop(AstNexttimeProp{prop.ticks, negated(prop.prop)});
 	}
 
 	template <class T>
-	AstPropId negated(T const &prop, AstPropId prop_id, bool for_positive_normal_form)
+	AstPropId negated(T const &prop, AstPropId prop_id)
 	{
-		if (for_positive_normal_form) {
-			std::string message = stringf("unhandled variant: negated: %s = %s", format(prop_id).c_str(), format(prop).c_str());
-			log_warning("%s\n", message.c_str());
-			return new_prop(AstUnhandled{message, {prop_id}});
-		}
-		return new_prop(AstNotProp{prop_id});
+		std::string message = stringf("unhandled variant: negated: %s = %s", format(prop_id).c_str(), format(prop).c_str());
+		log_warning("%s\n", message.c_str());
+		return new_prop(AstUnhandled{message, {prop_id}});
 	}
 };
 
@@ -884,10 +906,24 @@ struct VerificToAstWorker {
 		ast_root = parse_property(root->GetInput());
 	}
 
+	dict<Verific::Net *, AstSeqId> parse_sequence_cache;
+
 	AstSeqId parse_sequence(Verific::Net *net)
+	{
+		auto it = parse_sequence_cache.find(net);
+		if (it != parse_sequence_cache.end())
+			return it->second;
+
+		AstSeqId result = parse_sequence_uncached(net);
+		parse_sequence_cache[net] = result;
+		return result;
+	}
+
+	AstSeqId parse_sequence_uncached(Verific::Net *net)
 	{
 		using namespace Verific;
 		log_assert(net);
+
 		prim_type type = PRIM_END;
 		Instance *inst = nullptr;
 		if (!net->IsMultipleDriven() && (inst = net->Driver()))
@@ -967,7 +1003,20 @@ struct VerificToAstWorker {
 		}
 	}
 
+	dict<Verific::Net *, AstPropId> parse_property_cache;
+
 	AstPropId parse_property(Verific::Net *net)
+	{
+		auto it = parse_property_cache.find(net);
+		if (it != parse_property_cache.end())
+			return it->second;
+
+		AstPropId result = parse_property_uncached(net);
+		parse_property_cache[net] = result;
+		return result;
+	}
+
+	AstPropId parse_property_uncached(Verific::Net *net)
 	{
 		using namespace Verific;
 		log_assert(net);
@@ -1311,9 +1360,17 @@ struct AstToFsmWorker {
 	Fsm fsm;
 	FsmStateId fsm_init;
 
+	dict<AstPropId, FsmStateId> convert_property_cache;
+	dict<AstSeqId, FsmStateId> convert_sequence_cache;
+
 	FsmStateId convert_property(AstPropId prop)
 	{
-		return std::visit([&](auto &&arg) { return convert_property(arg, prop); }, ast[prop]);
+		auto found = convert_property_cache.find(prop);
+		if (found != convert_property_cache.end())
+			return found->second;
+		auto computed = std::visit([&](auto &&arg) { return convert_property(arg, prop); }, ast[prop]);
+		convert_property_cache[prop] = computed;
+		return computed;
 	}
 
 	FsmStateId convert_property(AstClockProp const &prop, AstPropId prop_id)
@@ -1384,7 +1441,13 @@ struct AstToFsmWorker {
 	FsmStateId convert_sequence(AstSeqId seq)
 	{
 		// TODO simplify modulo changes in empty admittance
-		return std::visit([&](auto &&arg) { return convert_sequence(arg, seq); }, ast[seq]);
+
+		auto found = convert_sequence_cache.find(seq);
+		if (found != convert_sequence_cache.end())
+			return found->second;
+		auto computed = std::visit([&](auto &&arg) { return convert_sequence(arg, seq); }, ast[seq]);
+		convert_sequence_cache[seq] = computed;
+		return computed;
 	}
 
 	FsmStateId convert_sequence(AstConcatSeq const &seq, AstSeqId seq_id)
