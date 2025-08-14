@@ -51,7 +51,7 @@ struct ShowWorker
 	std::map<RTLIL::IdString, int> autonames;
 	int single_idx_count;
 
-	struct net_conn { std::set<std::pair<std::string, int>> in, out; std::string color; };
+	struct net_conn { std::set<std::pair<std::string, int>> in, out; std::string color; std::map<std::string, std::string> force_color; };
 	std::map<std::string, net_conn> net_conn_map;
 
 	FILE *f;
@@ -267,7 +267,7 @@ struct ShowWorker
 		return ret;
 	}
 
-	std::string gen_portbox(std::string port, RTLIL::SigSpec sig, bool driver, std::string *node = nullptr)
+	std::string gen_portbox(std::string port, RTLIL::SigSpec sig, bool driver, std::string *node = nullptr, std::string *forceColor = nullptr)
 	{
 		std::string code;
 		std::string net = gen_signode_simple(sig);
@@ -355,6 +355,9 @@ struct ShowWorker
 				else
 					net_conn_map[net].out.insert({port, GetSize(sig)});
 				net_conn_map[net].color = nextColor(sig, net_conn_map[net].color);
+
+				if (forceColor)
+					net_conn_map[net].force_color.emplace(port, *forceColor);
 			}
 			if (node != nullptr)
 				*node = net;
@@ -431,7 +434,7 @@ struct ShowWorker
 			const char *shape = "diamond";
 			if (wire->port_input || wire->port_output)
 				shape = "octagon";
-			if (wire->name.isPublic()) {
+			if (wire->name.isPublic() || wire->known_driver() || wire->get_bool_attribute(ID(show))) {
 				std::string src_href;
 				if (href && wire->attributes.count(ID::src) > 0)
 					src_href = stringf(", href=\"%s\" ", escape(wire->attributes.at(ID::src).decode_string()));
@@ -496,8 +499,22 @@ struct ShowWorker
 
 			std::string code;
 			for (auto &conn : cell->connections()) {
+				std::string force_color;
+				if (conn.second.is_wire()) {
+					RTLIL::PortDir pd = ct.cell_port_dir(cell->type, conn.first);
+					if (pd == RTLIL::PD_OUTPUT) {
+						Wire *wire = conn.second.as_wire();
+						if (wire->known_driver()) {
+							if (wire->driverCell()->name == cell->name && wire->driverPort() == conn.first) {
+								force_color = "color=green";
+							} else {
+								force_color = "color=red";
+							}
+						}
+					}
+				}
 				code += gen_portbox(stringf("c%d:p%d", id2num(cell->name), id2num(conn.first)),
-						conn.second, ct.cell_output(cell->type, conn.first));
+						conn.second, ct.cell_output(cell->type, conn.first), nullptr, force_color.empty() ? nullptr : &force_color);
 			}
 
 			std::string src_href;
@@ -606,10 +623,16 @@ struct ShowWorker
 				else
 					fprintf(f, "%s [ shape=point ];\n", it.first.c_str());
 			}
+			auto color = [&](std::string const &name) {
+				auto forced = it.second.force_color.find(name);
+				if (forced == it.second.force_color.end())
+					return it.second.color;
+				return forced->second;
+			};
 			for (auto &it2 : it.second.in)
-				fprintf(f, "%s:e -> %s:w [%s, %s];\n", it2.first.c_str(), it.first.c_str(), nextColor(it.second.color).c_str(), widthLabel(it2.second).c_str());
+				fprintf(f, "%s:e -> %s:w [%s, %s];\n", it2.first.c_str(), it.first.c_str(), nextColor(color(it2.first)).c_str(), widthLabel(it2.second).c_str());
 			for (auto &it2 : it.second.out)
-				fprintf(f, "%s:e -> %s:w [%s, %s];\n", it.first.c_str(), it2.first.c_str(), nextColor(it.second.color).c_str(), widthLabel(it2.second).c_str());
+				fprintf(f, "%s:e -> %s:w [%s, %s];\n", it.first.c_str(), it2.first.c_str(), nextColor(color(it2.first)).c_str(), widthLabel(it2.second).c_str());
 		}
 
 		fprintf(f, "}\n");
