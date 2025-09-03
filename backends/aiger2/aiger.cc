@@ -91,7 +91,7 @@ struct Index {
 		int pos = index_wires(info, m);
 
 		for (auto cell : m->cells()) {
-			if (cell->type.in(KNOWN_OPS) || cell->type.in(ID($scopeinfo), ID($specify2), ID($specify3)))
+			if (cell->type.in(KNOWN_OPS) || cell->type.in(ID($scopeinfo), ID($specify2), ID($specify3), ID($input_port)))
 				continue;
 
 			Module *submodule = m->design->module(cell->type);
@@ -566,7 +566,7 @@ struct Index {
 		}
 
 		Lit ret;
-		if (!bit.wire->port_input) {
+		if (!bit.wire->port_input || bit.wire->port_output) {
 			// an output of a cell
 			Cell *driver = bit.wire->driverCell();
 
@@ -723,7 +723,7 @@ struct AigerWriter : Index<AigerWriter, unsigned int, 0, 1> {
 		for (auto id : top->ports) {
 		Wire *w = top->wire(id);
 		log_assert(w);
-		if (w->port_input)
+		if (w->port_input && !w->port_output)
 		for (int i = 0; i < w->width; i++) {
 			pi_literal(SigBit(w, i)) = lit_counter;
 			inputs.push_back(SigBit(w, i));
@@ -828,7 +828,7 @@ struct XAigerAnalysis : Index<XAigerAnalysis, int, 0, 0> {
 	{
 		log_assert(cursor.is_top()); // TOOD: fix analyzer to work with hierarchy
 
-		if (bit.wire->port_input)
+		if (bit.wire->port_input && !bit.wire->port_output)
 			return false;
 
 		Cell *driver = bit.wire->driverCell();
@@ -838,7 +838,7 @@ struct XAigerAnalysis : Index<XAigerAnalysis, int, 0, 0> {
 
 		int max = 1;
 		for (auto wire : mod->wires())
-		if (wire->port_input)
+		if (wire->port_input && !wire->port_output)
 		for (int i = 0; i < wire->width; i++) {
 			int ilevel = visit(cursor, driver->getPort(wire->name)[i]);
 			max = std::max(max, ilevel + 1);
@@ -858,7 +858,7 @@ struct XAigerAnalysis : Index<XAigerAnalysis, int, 0, 0> {
 		for (auto id : top->ports) {
 			Wire *w = top->wire(id);
 			log_assert(w);
-			if (w->port_input)
+			if (w->port_input && !w->port_output)
 			for (int i = 0; i < w->width; i++)
 				pi_literal(SigBit(w, i)) = 0;
 		}
@@ -868,7 +868,7 @@ struct XAigerAnalysis : Index<XAigerAnalysis, int, 0, 0> {
 			Module *def = design->module(box->type);
 			if (!(def && def->has_attribute(ID::abc9_box_id)))
 			for (auto &conn : box->connections_)
-			if (box->output(conn.first))
+			if (box->port_dir(conn.first) == RTLIL::PD_OUTPUT)
 			for (auto bit : conn.second)
 				pi_literal(bit, &cursor) = 0;
 		}
@@ -883,7 +883,7 @@ struct XAigerAnalysis : Index<XAigerAnalysis, int, 0, 0> {
 			Module *def = design->module(box->type);
 			if (!(def && def->has_attribute(ID::abc9_box_id)))
 			for (auto &conn : box->connections_)
-			if (box->input(conn.first))
+			if (box->port_dir(conn.first) != RTLIL::PD_OUTPUT)
 			for (auto bit : conn.second)
 				(void) eval_po(bit);
 		}
@@ -940,14 +940,9 @@ struct XAigerWriter : AigerWriter {
 	void append_box_ports(Cell *box, HierCursor &cursor, bool inputs)
 	{
 		for (auto &conn : box->connections_) {
-			bool is_input = box->input(conn.first);
-			bool is_output = box->output(conn.first);
+			auto port_dir = box->port_dir(conn.first);
 
-			if (!(is_input || is_output) || (is_input && is_output))
-				log_error("Ambiguous port direction on %s/%s\n",
-						  log_id(box->type), log_id(conn.first));
-
-			if (is_input && inputs) {
+			if (port_dir != RTLIL::PD_OUTPUT && inputs) {
 				int bitp = 0;
 				for (auto bit : conn.second) {
 					if (!bit.wire) {
@@ -969,10 +964,10 @@ struct XAigerWriter : AigerWriter {
 
 					bitp++;
 				}
-			} else if (is_output && !inputs) { 
+			} else if (port_dir == RTLIL::PD_OUTPUT && !inputs) {
 				for (auto &bit : conn.second) {
-					if (!bit.wire || bit.wire->port_input)
-						log_error("Bad connection");
+					if (!bit.wire || (bit.wire->port_input && !bit.wire->port_output))
+						log_error("Bad connection %s/%s ~ %s\n", log_id(box), log_id(conn.first), log_signal(conn.second));
 
 
 					ensure_pi(bit, cursor);
@@ -1106,7 +1101,7 @@ struct XAigerWriter : AigerWriter {
 						holes_pi_idx++;
 					}
 					holes_wb->setPort(port_id, in_conn);
-				} else if (port->port_output && !port->port_input) {
+				} else if (port->port_output) {
 					// primary
 					for (int i = 0; i < port->width; i++) {
 						SigBit bit;
@@ -1159,7 +1154,7 @@ struct XAigerWriter : AigerWriter {
 				log_assert(port);
 				if (port->port_input && !port->port_output) {
 					box_co_num += port->width;
-				} else if (port->port_output && !port->port_input) {
+				} else if (port->port_output) {
 					box_ci_num += port->width;
 				} else {
 					log_abort();
@@ -1182,7 +1177,7 @@ struct XAigerWriter : AigerWriter {
 		reset_counters();
 
 		for (auto w : top->wires())
-		if (w->port_input)
+		if (w->port_input && !w->port_output)
 		for (int i = 0; i < w->width; i++)
 			ensure_pi(SigBit(w, i));
 
@@ -1289,6 +1284,47 @@ struct XAigerWriter : AigerWriter {
 	}
 };
 
+static void replace_zbufs(Design *design)
+{
+	std::vector<Cell *> zbufs;
+
+	for (auto mod : design->modules()) {
+		zbufs.clear();
+		for (auto cell : mod->cells()) {
+			if (cell->type != ID($buf))
+				continue;
+			auto &sig = cell->getPort(ID::A);
+			for (int i = 0; i < GetSize(sig); ++i) {
+				if (sig[i] == State::Sz) {
+					zbufs.push_back(cell);
+					break;
+				}
+			}
+		}
+
+		for (auto cell : zbufs) {
+			auto sig = cell->getPort(ID::A);
+			for (int i = 0; i < GetSize(sig); ++i) {
+				if (sig[i] == State::Sz) {
+					Wire *w = mod->addWire(NEW_ID);
+					Cell *ud = mod->addCell(NEW_ID, ID($tribuf));
+					ud->set_bool_attribute(ID(aiger2_zbuf));
+					ud->setParam(ID::WIDTH, 1);
+					ud->setPort(ID::Y, w);
+					ud->setPort(ID::EN, State::S0);
+					ud->setPort(ID::A, State::S0);
+					sig[i] = w;
+				}
+			}
+			log("XXX %s -> %s\n", log_signal(cell->getPort(ID::A)), log_signal(sig));
+			cell->setPort(ID::A, sig);
+		}
+
+		mod->bufNormalize();
+	}
+}
+
+
 struct Aiger2Backend : Backend {
 	Aiger2Backend() : Backend("aiger2", "(experimental) write design to AIGER file")
 	{
@@ -1369,6 +1405,9 @@ struct Aiger2Backend : Backend {
 			log_cmd_error("No top module selected\n");
 
 		design->bufNormalize(true);
+
+		replace_zbufs(design);
+
 		writer.setup(top);
 		writer.write(f);
 
@@ -1450,6 +1489,9 @@ struct XAiger2Backend : Backend {
 		}
 
 		design->bufNormalize(true);
+
+		replace_zbufs(design);
+
 		writer.setup(top);
 		writer.write(f);
 

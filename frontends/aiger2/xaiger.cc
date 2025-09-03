@@ -451,6 +451,18 @@ struct Xaiger2Frontend : public Frontend {
 			if (!retained_boxes[box_seq++])
 				module->remove(cell);
 		}
+
+		std::vector<Cell *> to_remove;
+
+		for (auto cell : module->cells())
+			if (cell->type == ID($tribuf) && cell->has_attribute(ID(aiger2_zbuf)))
+				to_remove.push_back(cell);
+
+		for (auto cell : to_remove) {
+			SigSpec sig_y = cell->getPort(ID::Y);
+			module->addBuf(NEW_ID, Const(State::Sz, GetSize(sig_y)), sig_y);
+			module->remove(cell);
+		}
 	}
 
 	void execute(std::istream *&f, std::string filename, std::vector<std::string> args, Design *design) override
