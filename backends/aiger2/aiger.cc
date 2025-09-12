@@ -1146,6 +1146,9 @@ struct XAigerWriter : AigerWriter {
 		log_debug("poNum = %zu\n", pending_pos_num + pos.size() - boxes_co_num);
 		write_be32(h_buffer, nonopaque_boxes.size());
 
+		for (auto w : keep_wires)
+			log_debug("kept wire %s\n", log_id(w));
+
 		box_seq = 0;
 		for (auto [cursor, box, def] : nonopaque_boxes) {
 			int box_ci_num = 0, box_co_num = 0;
