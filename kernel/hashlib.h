@@ -1360,12 +1360,25 @@ class mfp
 	class AtomicParent {
 	public:
 		explicit AtomicParent(int p) : parent(p) {}
-		AtomicParent(const AtomicParent &other) : parent(other.get()) {}
-		AtomicParent &operator=(const AtomicParent &other) { set(other.get()); return *this; }
-		int get() const { return parent.load(std::memory_order_relaxed); }
-		void set(int p) { parent.store(p, std::memory_order_relaxed); }
+		AtomicParent(const AtomicParent &other) : parent(other.get_relaxed()) {}
+		AtomicParent(AtomicParent &&other) : parent(other.get_exclusive()) {}
+		AtomicParent &operator=(const AtomicParent &other) { set_exclusive(other.get_relaxed()); return *this; }
+		AtomicParent &operator=(AtomicParent &&other) { set_exclusive(other.get_exclusive()); return *this; }
+#if __cplusplus < 202002L && defined(_MSC_VER)
+// MSVC guarantees that aligned 32 bit accesses are atomic https://learn.microsoft.com/en-us/windows/win32/sync/interlocked-variable-access
+		int get_relaxed() const { return *(volatile int *)&parent; }
+		void set_relaxed(int p) { *(volatile int *)&parent = p; }
+#elif __cplusplus < 202002L
+		int get_relaxed() const { return __atomic_load_n(&parent, __ATOMIC_RELAXED); }
+		void set_relaxed(int p) { __atomic_store_n(&parent, p, __ATOMIC_RELAXED); }
+#else
+		int get_relaxed() const { return std::atomic_ref<int>(*const_cast<int *>(&parent)).load(std::memory_order_relaxed); }
+		void set_relaxed(int p) { std::atomic_ref<int>(*const_cast<int *>(&parent)).store(p, std::memory_order_relaxed); }
+#endif
+		int get_exclusive() { return parent; }
+		void set_exclusive(int p) { parent = p; }
 	private:
-		std::atomic<int> parent;
+		int parent;
 	};
 	std::vector<AtomicParent> parents;
 
@@ -1409,12 +1422,13 @@ public:
 	// either observe 'orig_parents[p]' or R (and observing R ends the first while loop
 	// immediately). Thus all parents[p] reads observe either 'orig_parents[p]' or R, so
 	// ifind() always returns R.
+	[[gnu::pure]]
 	int ifind(int i) const
 	{
 		int p = i, k = i;
 
 		while (true) {
-			int pp = parents[p].get();
+			int pp = parents[p].get_relaxed();
 			if (pp < 0)
 				break;
 			p = pp;
@@ -1425,8 +1439,32 @@ public:
 		// This is a side effect and doesn't affect the return value.
 		// It speeds up future find operations
 		while (k != p) {
-			int next_k = parents[k].get();
-			const_cast<AtomicParent*>(&parents[k])->set(p);
+			int next_k = parents[k].get_relaxed();
+			const_cast<AtomicParent*>(&parents[k])->set_relaxed(p);
+			k = next_k;
+		}
+
+		return p;
+	}
+
+	int ifind_exclusive(int i)
+	{
+		int p = i, k = i;
+
+		while (true) {
+			int pp = parents[p].get_exclusive();
+			if (pp < 0)
+				break;
+			p = pp;
+		}
+		// p is now the representative of i
+		// Now we traverse from i up to the representative again
+		// and make p the parent of all the nodes along the way.
+		// This is a side effect and doesn't affect the return value.
+		// It speeds up future find operations
+		while (k != p) {
+			int next_k = parents[k].get_exclusive();
+			const_cast<AtomicParent*>(&parents[k])->set_exclusive(p);
 			k = next_k;
 		}
 
@@ -1437,11 +1475,11 @@ public:
 	// Makes ifind(j) the root of the merged set.
 	void imerge(int i, int j)
 	{
-		i = ifind(i);
-		j = ifind(j);
+		i = ifind_exclusive(i);
+		j = ifind_exclusive(j);
 
 		if (i != j)
-			parents[i].set(j);
+			parents[i].set_exclusive(j);
 	}
 
 	void ipromote(int i)
@@ -1449,19 +1487,20 @@ public:
 		int k = i;
 
 		while (k != -1) {
-			int next_k = parents[k].get();
-			parents[k].set(i);
+			int next_k = parents[k].get_exclusive();
+			parents[k].set_exclusive(i);
 			k = next_k;
 		}
 
-		parents[i].set(-1);
+		parents[i].set_exclusive(-1);
 	}
 
 	int lookup(const K &a)
 	{
-		return ifind((*this)(a));
+		return ifind_exclusive((*this)(a));
 	}
 
+	[[gnu::pure]]
 	const K &find(const K &a) const
 	{
 		int i = database.at(a, -1);
